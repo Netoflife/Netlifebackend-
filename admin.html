@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetEdu Admin Panel</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    body { background-color: #f8f9fa; }
+    .sidebar { height: 100vh; position: fixed; top: 0; left: 0; width: 250px; background-color: #343a40; padding-top: 20px; }
+    .sidebar a { color: white; padding: 10px; display: block; }
+    .sidebar a:hover { background-color: #495057; }
+    .main-content { margin-left: 260px; padding: 20px; }
+    .navbar { margin-left: 250px; }
+    .hidden { display: none; }
+    .spinner { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+    #activityChart { max-height: 300px; }
+  </style>
+</head>
+<body>
+  <!-- Spinner -->
+  <div id="spinner" class="spinner hidden">
+    <div class="spinner-border text-primary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <!-- Login Page -->
+  <div id="loginPage" class="container mt-5">
+    <div class="row justify-content-center">
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-body">
+            <h2 class="card-title text-center">Admin Login</h2>
+            <form id="loginForm">
+              <div class="mb-3">
+                <label for="loginEmail" class="form-label">Email</label>
+                <input type="email" class="form-control" id="loginEmail" required>
+              </div>
+              <div class="mb-3">
+                <label for="loginPassword" class="form-label">Password</label>
+                <input type="password" class="form-control" id="loginPassword" required>
+              </div>
+              <div id="loginError" class="text-danger mb-3"></div>
+              <button type="submit" class="btn btn-primary w-100">Login</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" class="hidden">
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark bg-dark">
+      <div class="container-fluid">
+        <span class="navbar-brand">NetEdu Admin Panel</span>
+        <div>
+          <span id="adminName" class="navbar-text me-3"></span>
+          <button class="btn btn-outline-light" onclick="logout()">Logout</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <a href="#" onclick="showSection('dashboard')">Dashboard</a>
+      <a href="#" onclick="showSection('users')">Users</a>
+      <a href="#" onclick="showSection('questions')">Questions</a>
+      <a href="#" onclick="showSection('books')">Books</a>
+      <a href="#" onclick="showSection('withdrawals')">Withdrawals</a>
+      <a href="#" onclick="showSection('posts')">Posts</a>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <!-- Dashboard -->
+      <div id="dashboard" class="section">
+        <h2>Dashboard</h2>
+        <div class="row">
+          <div class="col-md-4">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h5 class="card-title">Total Users</h5>
+                <h3 id="totalUsers">0</h3>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h5 class="card-title">Pending Books</h5>
+                <h3 id="pendingBooks">0</h3>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h5 class="card-title">Pending Withdrawals</h5>
+                <h3 id="pendingWithdrawals">0</h3>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h5 class="card-title">User Activity (Last 7 Days)</h5>
+            <canvas id="activityChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Users -->
+      <div id="users" class="section hidden">
+        <h2>Users</h2>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Virtual Number</th>
+              <th>Email</th>
+              <th>Balance</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="usersTable"></tbody>
+        </table>
+        <!-- Fund Wallet Modal -->
+        <div class="modal fade" id="fundModal" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Fund Wallet</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <input type="hidden" id="fundUserId">
+                <div class="mb-3">
+                  <label for="fundAmount" class="form-label">Amount (₦)</label>
+                  <input type="number" class="form-control" id="fundAmount" min="1">
+                </div>
+                <div id="fundError" class="text-danger"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="fundWallet()">Fund</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Questions -->
+      <div id="questions" class="section hidden">
+        <h2>Questions</h2>
+        <button class="btn btn-primary mb-3" data-bs-toggle="modal" data-bs-target="#questionModal">Add Question</button>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Difficulty</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="questionsTable"></tbody>
+        </table>
+        <!-- Question Modal -->
+        <div class="modal fade" id="questionModal" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Add/Edit Question</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <input type="hidden" id="questionId">
+                <div class="mb-3">
+                  <label for="questionText" class="form-label">Question</label>
+                  <input type="text" class="form-control" id="questionText">
+                </div>
+                <div class="mb-3">
+                  <label for="option1" class="form-label">Option 1</label>
+                  <input type="text" class="form-control" id="option1">
+                </div>
+                <div class="mb-3">
+                  <label for="option2" class="form-label">Option 2</label>
+                  <input type="text" class="form-control" id="option2">
+                </div>
+                <div class="mb-3">
+                  <label for="option3" class="form-label">Option 3</label>
+                  <input type="text" class="form-control" id="option3">
+                </div>
+                <div class="mb-3">
+                  <label for="option4" class="form-label">Option 4</label>
+                  <input type="text" class="form-control" id="option4">
+                </div>
+                <div class="mb-3">
+                  <label for="questionAnswer" class="form-label">Answer</label>
+                  <input type="text" class="form-control" id="questionAnswer">
+                </div>
+                <div class="mb-3">
+                  <label for="questionDifficulty" class="form-label">Difficulty</label>
+                  <select class="form-select" id="questionDifficulty">
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">-hard</option>
+                  </select>
+                </div>
+                <div id="questionError" class="text-danger"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveQuestion()">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Books -->
+      <div id="books" class="section hidden">
+        <h2>Books</h2>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="booksTable"></tbody>
+        </table>
+      </div>
+
+      <!-- Withdrawals -->
+      <div id="withdrawals" class="section hidden">
+        <h2>Withdrawals</h2>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Amount (₦)</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="withdrawalsTable"></tbody>
+        </table>
+        <!-- Manual Withdrawal Modal -->
+        <div class="modal fade" id="withdrawModal" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Manual Withdrawal</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <input type="hidden" id="withdrawUserId">
+                <div class="mb-3">
+                  <label for="withdrawAmount" class="form-label">Amount (₦)</label>
+                  <input type="number" class="form-control" id="withdrawAmount" min="1">
+                </div>
+                <div id="withdrawError" class="text-danger"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="manualWithdraw()">Withdraw</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Posts -->
+      <div id="posts" class="section hidden">
+        <h2>Posts</h2>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Description</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="postsTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    const API_URL = 'http://localhost:5000'; // Update for production
+    let currentUser = null;
+    const fundModal = new bootstrap.Modal(document.getElementById('fundModal'));
+    const questionModal = new bootstrap.Modal(document.getElementById('questionModal'));
+    const withdrawModal = new bootstrap.Modal(document.getElementById('withdrawModal'));
+
+    // Auth Functions
+    function showSpinner(show) {
+      document.getElementById('spinner').classList.toggle('hidden', !show);
+    }
+
+    async function login(event) {
+      event.preventDefault();
+      showSpinner(true);
+      const email = document.getElementById('loginEmail').value;
+      const password = document.getElementById('loginPassword').value;
+      const errorDiv = document.getElementById('loginError');
+      try {
+        const response = await fetch(`${API_URL}/api/admin/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Login failed');
+        localStorage.setItem('adminToken', data.token);
+        currentUser = data.user;
+        document.getElementById('loginPage').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+        document.getElementById('adminName').textContent = currentUser.virtualNumber;
+        showSection('dashboard');
+      } catch (error) {
+        errorDiv.textContent = error.message;
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem('adminToken');
+      currentUser = null;
+      document.getElementById('app').classList.add('hidden');
+      document.getElementById('loginPage').classList.remove('hidden');
+      document.getElementById('loginForm').reset();
+      document.getElementById('loginError').textContent = '';
+    }
+
+    async function apiRequest(url, method = 'GET', body = null) {
+      const token = localStorage.getItem('adminToken');
+      const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const options = { method, headers };
+      if (body) options.body = JSON.stringify(body);
+      const response = await fetch(`${API_URL}${url}`, options);
+      if (response.status === 401) {
+        logout();
+        throw new Error('Session expired. Please log in again.');
+      }
+      return response.json();
+    }
+
+    // UI Functions
+    function showSection(sectionId) {
+      document.querySelectorAll('.section').forEach(section => section.classList.add('hidden'));
+      document.getElementById(sectionId).classList.remove('hidden');
+      if (sectionId === 'dashboard') loadDashboard();
+      else if (sectionId === 'users') loadUsers();
+      else if (sectionId === 'questions') loadQuestions();
+      else if (sectionId === 'books') loadBooks();
+      else if (sectionId === 'withdrawals') loadWithdrawals();
+      else if (sectionId === 'posts') loadPosts();
+    }
+
+    async function loadDashboard() {
+      showSpinner(true);
+      try {
+        const [users, books, withdrawals, activity] = await Promise.all([
+          apiRequest('/api/users'),
+          apiRequest('/api/books?status=Pending Approval'),
+          apiRequest('/api/withdrawals?status=Pending'),
+          apiRequest('/api/user/activity/all')
+        ]);
+        document.getElementById('totalUsers').textContent = users.length;
+        document.getElementById('pendingBooks').textContent = books.length;
+        document.getElementById('pendingWithdrawals').textContent = withdrawals.length;
+
+        const ctx = document.getElementById('activityChart').getContext('2d');
+        new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: activity.map(a => a.date),
+            datasets: [{
+              label: 'Total Points',
+              data: activity.map(a => a.points),
+              borderColor: '#0d6efd',
+              fill: false
+            }]
+          },
+          options: { responsive: true, maintainAspectRatio: false }
+        });
+      } catch (error) {
+        alert('Error loading dashboard: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function loadUsers() {
+      if (currentUser.role !== 'superadmin') return showSection('dashboard');
+      showSpinner(true);
+      try {
+        const users = await apiRequest('/api/users');
+        const tbody = document.getElementById('usersTable');
+        tbody.innerHTML = users.map(user => `
+          <tr>
+            <td>${user.virtualNumber}</td>
+            <td>${user.email}</td>
+            <td>₦${(user.depositBalance + user.earningBalance).toLocaleString()}</td>
+            <td>
+              <button class="btn btn-primary btn-sm" onclick="openFundModal('${user._id}')">Fund</button>
+              <button class="btn btn-danger btn-sm" onclick="banUser('${user._id}')" ${user.isBanned ? 'disabled' : ''}>${user.isBanned ? 'Banned' : 'Ban'}</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        alert('Error loading users: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function openFundModal(userId) {
+      document.getElementById('fundUserId').value = userId;
+      document.getElementById('fundAmount').value = '';
+      document.getElementById('fundError').textContent = '';
+      fundModal.show();
+    }
+
+    async function fundWallet() {
+      const userId = document.getElementById('fundUserId').value;
+      const amount = parseFloat(document.getElementById('fundAmount').value);
+      const errorDiv = document.getElementById('fundError');
+      if (!amount || amount <= 0) {
+        errorDiv.textContent = 'Enter a valid amount';
+        return;
+      }
+      showSpinner(true);
+      try {
+        await apiRequest(`/api/users/${userId}/fund`, 'POST', { amount });
+        fundModal.hide();
+        loadUsers();
+        alert('Wallet funded successfully');
+      } catch (error) {
+        errorDiv.textContent = error.message;
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function banUser(userId) {
+      if (!confirm('Ban this user?')) return;
+      showSpinner(true);
+      try {
+        await apiRequest(`/api/users/${userId}`, 'PUT', { isBanned: true });
+        loadUsers();
+      } catch (error) {
+        alert('Error banning user: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function loadQuestions() {
+      showSpinner(true);
+      try {
+        const questions = await apiRequest('/api/questions');
+        const tbody = document.getElementById('questionsTable');
+        tbody.innerHTML = questions.map(q => `
+          <tr>
+            <td>${q.question}</td>
+            <td>${q.difficulty}</td>
+            <td>
+              <button class="btn btn-primary btn-sm" onclick='editQuestion(${JSON.stringify(q)})'>Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteQuestion('${q._id}')">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        alert('Error loading questions: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    function editQuestion(question) {
+      document.getElementById('questionId').value = question._id || '';
+      document.getElementById('questionText').value = question.question || '';
+      document.getElementById('option1').value = question.options[0] || '';
+      document.getElementById('option2').value = question.options[1] || '';
+      document.getElementById('option3').value = question.options[2] || '';
+      document.getElementById('option4').value = question.options[3] || '';
+      document.getElementById('questionAnswer').value = question.answer || '';
+      document.getElementById('questionDifficulty').value = question.difficulty || 'easy';
+      document.getElementById('questionError').textContent = '';
+      questionModal.show();
+    }
+
+    async function saveQuestion() {
+      const id = document.getElementById('questionId').value;
+      const question = {
+        question: document.getElementById('questionText').value,
+        options: [
+          document.getElementById('option1').value,
+          document.getElementById('option2').value,
+          document.getElementById('option3').value,
+          document.getElementById('option4').value
+        ].filter(opt => opt),
+        answer: document.getElementById('questionAnswer').value,
+        difficulty: document.getElementById('questionDifficulty').value
+      };
+      const errorDiv = document.getElementById('questionError');
+      if (!question.question || !question.answer || question.options.length < 2) {
+        errorDiv.textContent = 'Question, answer, and at least two options are required';
+        return;
+      }
+      showSpinner(true);
+      try {
+        await apiRequest(id ? `/api/questions/${id}` : '/api/questions', id ? 'PUT' : 'POST', question);
+        questionModal.hide();
+        loadQuestions();
+      } catch (error) {
+        errorDiv.textContent = error.message;
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function deleteQuestion(id) {
+      if (!confirm('Delete this question?')) return;
+      showSpinner(true);
+      try {
+        await apiRequest(`/api/questions/${id}`, 'DELETE');
+        loadQuestions();
+      } catch (error) {
+        alert('Error deleting question: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function loadBooks() {
+      showSpinner(true);
+      try {
+        const books = await apiRequest('/api/books');
+        const tbody = document.getElementById('booksTable');
+        tbody.innerHTML = books.map(b => `
+          <tr>
+            <td>${b.title}</td>
+            <td>${b.status}</td>
+            <td>
+              <button class="btn btn-success btn-sm" onclick="updateBookStatus('${b._id}', 'Approved')" ${b.status === 'Approved' ? 'disabled' : ''}>Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="updateBookStatus('${b._id}', 'Rejected')" ${b.status === 'Rejected' ? 'disabled' : ''}>Reject</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        alert('Error loading books: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function updateBookStatus(bookId, status) {
+      if (!confirm(`Set book status to ${status}?`)) return;
+      showSpinner(true);
+      try {
+        await apiRequest(`/api/books/${bookId}`, 'PUT', { status });
+        loadBooks();
+      } catch (error) {
+        alert('Error updating book status: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function loadWithdrawals() {
+      if (currentUser.role !== 'superadmin') return showSection('dashboard');
+      showSpinner(true);
+      try {
+        const withdrawals = await apiRequest('/api/withdrawals');
+        const tbody = document.getElementById('withdrawalsTable');
+        tbody.innerHTML = withdrawals.map(w => `
+          <tr>
+            <td>${w.userId.virtualNumber}</td>
+            <td>₦${w.amount.toLocaleString()}</td>
+            <td>${w.status}</td>
+            <td>
+              <button class="btn btn-success btn-sm" onclick="updateWithdrawalStatus('${w._id}', 'Approved')" ${w.status === 'Approved' ? 'disabled' : ''}>Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="updateWithdrawalStatus('${w._id}', 'Failed')" ${w.status === 'Failed' ? 'disabled' : ''}>Reject</button>
+              <button class="btn btn-primary btn-sm" onclick="openWithdrawModal('${w.userId._id}', ${w.amount})">Manual</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        alert('Error loading withdrawals: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function updateWithdrawalStatus(id, status) {
+      if (!confirm(`Set withdrawal status to ${status}?`)) return;
+      showSpinner(true);
+      try {
+        await apiRequest(`/api/withdrawals/${id}`, 'PUT', { status });
+        loadWithdrawals();
+      } catch (error) {
+        alert('Error updating withdrawal: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function openWithdrawModal(userId, amount) {
+      document.getElementById('withdrawUserId').value = userId;
+      document.getElementById('withdrawAmount').value = amount;
+      document.getElementById('withdrawError').textContent = '';
+      withdrawModal.show();
+    }
+
+    async function manualWithdraw() {
+      const userId = document.getElementById('withdrawUserId').value;
+      const amount = parseFloat(document.getElementById('withdrawAmount').value);
+      const errorDiv = document.getElementById('withdrawError');
+      if (!amount || amount <= 0) {
+        errorDiv.textContent = 'Enter a valid amount';
+        return;
+      }
+      showSpinner(true);
+      try {
+        await apiRequest(`/api/users/${userId}/withdraw`, 'POST', { amount });
+        withdrawModal.hide();
+        loadWithdrawals();
+        alert('Manual withdrawal processed');
+      } catch (error) {
+        errorDiv.textContent = error.message;
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function loadPosts() {
+      showSpinner(true);
+      try {
+        const posts = await apiRequest('/api/posts');
+        const tbody = document.getElementById('postsTable');
+        tbody.innerHTML = posts.map(p => `
+          <tr>
+            <td>${p.userId.virtualNumber}</td>
+            <td>${p.description || 'Media'}</td>
+            <td>
+              <button class="btn btn-danger btn-sm" onclick="deletePost('${p._id}')">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        alert('Error loading posts: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    async function deletePost(postId) {
+      if (!confirm('Delete this post?')) return;
+      showSpinner(true);
+      try {
+        await apiRequest(`/api/posts/${postId}`, 'DELETE');
+        loadPosts();
+      } catch (error) {
+        alert('Error deleting post: ' + error.message);
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    // Initialize
+    document.getElementById('loginForm').addEventListener('submit', login);
+    if (localStorage.getItem('adminToken')) {
+      apiRequest('/api/profile')
+        .then(data => {
+          currentUser = data.user;
+          if (currentUser.isAdmin) {
+            document.getElementById('loginPage').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            document.getElementById('adminName').textContent = currentUser.virtualNumber;
+            showSection('dashboard');
+          } else {
+            logout();
+          }
+        })
+        .catch(() => logout());
+    }
+  </script>
+</body>
+</html>

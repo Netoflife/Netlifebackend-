@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetEdu Admin Panel</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/2.4.0/purify.min.js"></script>
+  <style>
+    body { background-color: #f8f9fa; }
+    .sidebar { height: 100vh; position: fixed; top: 0; left: 0; width: 250px; background-color: #343a40; padding-top: 20px; }
+    .sidebar a { color: white; padding: 10px; display: block; }
+    .sidebar a:hover { background-color: #495057; }
+    .main-content { margin-left: 260px; padding: 20px; }
+    .navbar { margin-left: 250px; }
+    .hidden { display: none; }
+    .section-spinner { display: none; text-align: center; padding: 20px; }
+    .section-spinner.active { display: block; }
+    #activityChart { max-height: 300px; }
+    .toast-container { position: fixed; top: 20px; right: 20px; z-index: 1055; }
+    @media (max-width: 768px) {
+      .sidebar { width: 200px; }
+      .main-content, .navbar { margin-left: 210px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Global Spinner -->
+  <div id="spinner" class="spinner hidden">
+    <div class="spinner-border text-primary" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container"></div>
+
+  <!-- Login Page -->
+  <div id="loginPage" class="container mt-5">
+    <div class="row justify-content-center">
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-body">
+            <h2 class="card-title text-center">Admin Login</h2>
+            <form id="loginForm">
+              <div class="mb-3">
+                <label for="loginEmail" class="form-label">Email</label>
+                <input type="email" class="form-control" id="loginEmail" required aria-describedby="emailHelp">
+                <div id="emailHelp" class="form-text">Enter a valid email address.</div>
+              </div>
+              <div class="mb-3">
+                <label for="loginPassword" class="form-label">Password</label>
+                <input type="password" class="form-control" id="loginPassword" required aria-describedby="passwordHelp">
+                <div id="passwordHelp" class="form-text">Password must be at least 8 characters.</div>
+              </div>
+              <div id="loginError" class="text-danger mb-3"></div>
+              <button type="submit" class="btn btn-primary w-100" aria-label="Login to admin panel">Login</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" class="hidden">
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark bg-dark">
+      <div class="container-fluid">
+        <span class="navbar-brand">NetEdu Admin Panel</span>
+        <div>
+          <span id="adminName" class="navbar-text me-3"></span>
+          <button class="btn btn-outline-light" onclick="logout()" aria-label="Logout">Logout</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <a href="#" onclick="showSection('dashboard')" aria-label="Go to Dashboard">Dashboard</a>
+      <a href="#" onclick="showSection('users')" aria-label="Go to Users">Users</a>
+      <a href="#" onclick="showSection('questions')" aria-label="Go to Questions">Questions</a>
+      <a href="#" onclick="showSection('books')" aria-label="Go to Books">Books</a>
+      <a href="#" onclick="showSection('withdrawals')" aria-label="Go to Withdrawals">Withdrawals</a>
+      <a href="#" onclick="showSection('posts')" aria-label="Go to Posts">Posts</a>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <!-- Dashboard -->
+      <div id="dashboard" class="section">
+        <h2>Dashboard</h2>
+        <div class="section-spinner" id="dashboardSpinner">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col-md-4">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h5 class="card-title">Total Users</h5>
+                <h3 id="totalUsers">0</h3>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h5 class="card-title">Pending Books</h5>
+                <h3 id="pendingBooks">0</h3>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h5 class="card-title">Pending Withdrawals</h5>
+                <h3 id="pendingWithdrawals">0</h3>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h5 class="card-title">User Activity (Last 7 Days)</h5>
+            <canvas id="activityChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Users -->
+      <div id="users" class="section hidden">
+        <h2>Users</h2>
+        <div class="section-spinner" id="usersSpinner">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+        <div class="mb-3">
+          <div class="input-group">
+            <input type="text" class="form-control" id="userSearch" placeholder="Search by virtual number or email" aria-label="Search users">
+            <button class="btn btn-primary" onclick="searchUsers()" aria-label="Search users">Search</button>
+            <button class="btn btn-secondary" onclick="loadUsers()" aria-label="Reset search">Reset</button>
+          </div>
+        </div>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Virtual Number</th>
+              <th>Email</th>
+              <th>Balance</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="usersTable"></tbody>
+        </table>
+        <nav aria-label="User pagination">
+          <ul class="pagination" id="usersPagination"></ul>
+        </nav>
+        <!-- Fund Wallet Modal -->
+        <div class="modal fade" id="fundModal" tabindex="-1" aria-labelledby="fundModalLabel">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="fundModalLabel">Fund Wallet</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <input type="hidden" id="fundUserId">
+                <div class="mb-3">
+                  <label for="fundAmount" class="form-label">Amount (₦)</label>
+                  <input type="number" class="form-control" id="fundAmount" min="1" max="1000000" aria-describedby="fundAmountHelp">
+                  <div id="fundAmountHelp" class="form-text">Enter an amount between 1 and 1,000,000.</div>
+                </div>
+                <div id="fundError" class="text-danger"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" aria-label="Cancel">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="fundWallet()" aria-label="Fund wallet">Fund</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Questions -->
+      <div id="questions" class="section hidden">
+        <h2>Questions</h2>
+        <div class="section-spinner" id="questionsSpinner">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+        <button class="btn btn-primary mb-3" data-bs-toggle="modal" data-bs-target="#questionModal" aria-label="Add new question">Add Question</button>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Difficulty</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="questionsTable"></tbody>
+        </table>
+        <!-- Question Modal -->
+        <div class="modal fade" id="questionModal" tabindex="-1" aria-labelledby="questionModalLabel">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="questionModalLabel">Add/Edit Question</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <input type="hidden" id="questionId">
+                <div class="mb-3">
+                  <label for="questionText" class="form-label">Question</label>
+                  <input type="text" class="form-control" id="questionText" aria-describedby="questionTextHelp">
+                  <div id="questionTextHelp" class="form-text">Enter the question text.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="option1" class="form-label">Option 1</label>
+                  <input type="text" class="form-control" id="option1" aria-describedby="option1Help">
+                  <div id="option1Help" class="form-text">Enter the first option.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="option2" class="form-label">Option 2</label>
+                  <input type="text" class="form-control" id="option2" aria-describedby="option2Help">
+                  <div id="option2Help" class="form-text">Enter the second option.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="option3" class="form-label">Option 3</label>
+                  <input type="text" class="form-control" id="option3">
+                </div>
+                <div class="mb-3">
+                  <label for="option4" class="form-label">Option 4</label>
+                  <input type="text" class="form-control" id="option4">
+                </div>
+                <div class="mb-3">
+                  <label for="questionAnswer" class="form-label">Answer</label>
+                  <input type="text" class="form-control" id="questionAnswer" aria-describedby="questionAnswerHelp">
+                  <div id="questionAnswerHelp" class="form-text">Enter the correct answer.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="questionDifficulty" class="form-label">Difficulty</label>
+                  <select class="form-select" id="questionDifficulty" aria-describedby="questionDifficultyHelp">
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
+                  </select>
+                  <div id="questionDifficultyHelp" class="form-text">Select the difficulty level.</div>
+                </div>
+                <div id="questionError" class="text-danger"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" aria-label="Cancel">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveQuestion()" aria-label="Save question">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Books -->
+      <div id="books" class="section hidden">
+        <h2>Books</h2>
+        <div class="section-spinner" id="booksSpinner">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="booksTable"></tbody>
+        </table>
+      </div>
+
+      <!-- Withdrawals -->
+      <div id="withdrawals" class="section hidden">
+        <h2>Withdrawals</h2>
+        <div class="section-spinner" id="withdrawalsSpinner">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Amount (₦)</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="withdrawalsTable"></tbody>
+        </table>
+        <!-- Manual Withdrawal Modal -->
+        <div class="modal fade" id="withdrawModal" tabindex="-1" aria-labelledby="withdrawModalLabel">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="withdrawModalLabel">Manual Withdrawal</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <input type="hidden" id="withdrawUserId">
+                <div class="mb-3">
+                  <label for="withdrawAmount" class="form-label">Amount (₦)</label>
+                  <input type="number" class="form-control" id="withdrawAmount" min="1" max="1000000" aria-describedby="withdrawAmountHelp">
+                  <div id="withdrawAmountHelp" class="form-text">Enter an amount between 1 and 1,000,000.</div>
+                </div>
+                <div id="withdrawError" class="text-danger"></div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" aria-label="Cancel">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="manualWithdraw()" aria-label="Process withdrawal">Withdraw</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Posts -->
+      <div id="posts" class="section hidden">
+        <h2>Posts</h2>
+        <div class="section-spinner" id="postsSpinner">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Description</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="postsTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    const API_URL = 'http://localhost:5000'; // Update for production
+    let currentUser = null;
+    let activityChart = null;
+    let currentPage = 1;
+    const usersPerPage = 10;
+    const fundModal = new bootstrap.Modal(document.getElementById('fundModal'));
+    const questionModal = new bootstrap.Modal(document.getElementById('questionModal'));
+    const withdrawModal = new bootstrap.Modal(document.getElementById('withdrawModal'));
+
+    // Utility Functions
+    function sanitizeInput(input) {
+      return DOMPurify.sanitize(input);
+    }
+
+    function showSpinner(show, sectionId = null) {
+      if (sectionId) {
+        document.getElementById(`${sectionId}Spinner`).classList.toggle('active', show);
+      } else {
+        document.getElementById('spinner').classList.toggle('hidden', !show);
+      }
+    }
+
+    function showError(message, elementId = null) {
+      if (elementId) {
+        document.getElementById(elementId).textContent = sanitizeInput(message);
+      } else {
+        const toast = document.createElement('div');
+        toast.className = 'toast align-items-center text-bg-danger border-0';
+        toast.setAttribute('role', 'alert');
+        toast.setAttribute('aria-live', 'assertive');
+        toast.setAttribute('aria-atomic', 'true');
+        toast.innerHTML = `
+          <div class="d-flex">
+            <div class="toast-body">${sanitizeInput(message)}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+          </div>
+        `;
+        document.querySelector('.toast-container').appendChild(toast);
+        new bootstrap.Toast(toast).show();
+      }
+    }
+
+    // Auth Functions
+    async function login(event) {
+      event.preventDefault();
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showError('Invalid email format', 'loginError');
+        return;
+      }
+      if (password.length < 8) {
+        showError('Password must be at least 8 characters', 'loginError');
+        return;
+      }
+      showSpinner(true);
+      try {
+        const response = await fetch(`${API_URL}/api/admin/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        if (!response.ok) throw new Error('Login failed');
+        const data = await response.json();
+        localStorage.setItem('adminToken', data.token);
+        currentUser = data.user;
+        document.getElementById('loginPage').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+        document.getElementById('adminName').textContent = sanitizeInput(currentUser.virtualNumber);
+        showSection('dashboard');
+      } catch (error) {
+        showError('Failed to log in. Please try again.', 'loginError');
+      } finally {
+        showSpinner(false);
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem('adminToken');
+      currentUser = null;
+      document.getElementById('app').classList.add('hidden');
+      document.getElementById('loginPage').classList.remove('hidden');
+      document.getElementById('loginForm').reset();
+      document.getElementById('loginError').textContent = '';
+    }
+
+    async function apiRequest(url, method = 'GET', body = null) {
+      try {
+        const token = localStorage.getItem('adminToken');
+        const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+        const options = { method, headers };
+        if (body) options.body = JSON.stringify(body);
+        const response = await fetch(`${API_URL}${url}`, options);
+        if (response.status === 401) {
+          logout();
+          throw new Error('Session expired. Please log in again.');
+        }
+        if (!response.ok) throw new Error('Request failed');
+        return await response.json();
+      } catch (error) {
+        showError(error.message);
+        throw error;
+      }
+    }
+
+    // UI Functions
+    function showSection(sectionId) {
+      document.querySelectorAll('.section').forEach(section => section.classList.add('hidden'));
+      document.getElementById(sectionId).classList.remove('hidden');
+      if (sectionId === 'dashboard') loadDashboard();
+      else if (sectionId === 'users') loadUsers();
+      else if (sectionId === 'questions') loadQuestions();
+      else if (sectionId === 'books') loadBooks();
+      else if (sectionId === 'withdrawals') loadWithdrawals();
+      else if (sectionId === 'posts') loadPosts();
+    }
+
+    async function loadDashboard() {
+      showSpinner(true, 'dashboard');
+      try {
+        const [users, books, withdrawals, activity] = await Promise.all([
+          apiRequest('/api/users'),
+          apiRequest('/api/books?status=Pending Approval'),
+          apiRequest('/api/withdrawals?status=Pending'),
+          apiRequest('/api/user/activity/all')
+        ]);
+        document.getElementById('totalUsers').textContent = users.length;
+        document.getElementById('pendingBooks').textContent = books.length;
+        document.getElementById('pendingWithdrawals').textContent = withdrawals.length;
+
+        const ctx = document.getElementById('activityChart').getContext('2d');
+        if (activityChart) activityChart.destroy();
+        activityChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: activity.map(a => a.date),
+            datasets: [{
+              label: 'Total Points',
+              data: activity.map(a => a.points),
+              borderColor: '#0d6efd',
+              fill: false
+            }]
+          },
+          options: { responsive: true, maintainAspectRatio: false }
+        });
+      } catch (error) {
+        showError('Failed to load dashboard. Please try again.');
+      } finally {
+        showSpinner(false, 'dashboard');
+      }
+    }
+
+    async function loadUsers(page = 1) {
+      showSpinner(true, 'users');
+      try {
+        const users = await apiRequest('/api/users');
+        currentPage = page;
+        const start = (page - 1) * usersPerPage;
+        const end = start + usersPerPage;
+        const paginatedUsers = users.slice(start, end);
+        const tbody = document.getElementById('usersTable');
+        tbody.innerHTML = paginatedUsers.map(user => `
+          <tr>
+            <td>${sanitizeInput(user.virtualNumber)}</td>
+            <td>${sanitizeInput(user.email)}</td>
+            <td>₦${(user.depositBalance + user.earningBalance).toLocaleString()}</td>
+            <td>
+              <button class="btn btn-primary btn-sm" onclick="openFundModal('${user._id}')" aria-label="Fund wallet for ${sanitizeInput(user.virtualNumber)}">Fund</button>
+              <button class="btn btn-danger btn-sm" onclick="banUser('${user._id}')" ${user.isBanned ? 'disabled' : ''} aria-label="${user.isBanned ? 'User banned' : 'Ban user'}">${user.isBanned ? 'Banned' : 'Ban'}</button>
+            </td>
+          </tr>
+        `).join('');
+        renderPagination(users.length, page);
+      } catch (error) {
+        showError('Failed to load users. Please try again.');
+      } finally {
+        showSpinner(false, 'users');
+      }
+    }
+
+    function renderPagination(totalItems, currentPage) {
+      const totalPages = Math.ceil(totalItems / usersPerPage);
+      const pagination = document.getElementById('usersPagination');
+      pagination.innerHTML = '';
+      if (totalPages <= 1) return;
+
+      const prevItem = document.createElement('li');
+      prevItem.className = `page-item ${currentPage === 1 ? 'disabled' : ''}`;
+      prevItem.innerHTML = `<a class="page-link" href="#" onclick="loadUsers(${currentPage - 1})" aria-label="Previous page">Previous</a>`;
+      pagination.appendChild(prevItem);
+
+      for (let i = 1; i <= totalPages; i++) {
+        const pageItem = document.createElement('li');
+        pageItem.className = `page-item ${i === currentPage ? 'active' : ''}`;
+        pageItem.innerHTML = `<a class="page-link" href="#" onclick="loadUsers(${i})" aria-label="Page ${i}">${i}</a>`;
+        pagination.appendChild(pageItem);
+      }
+
+      const nextItem = document.createElement('li');
+      nextItem.className = `page-item ${currentPage === totalPages ? 'disabled' : ''}`;
+      nextItem.innerHTML = `<a class="page-link" href="#" onclick="loadUsers(${currentPage + 1})" aria-label="Next page">Next</a>`;
+      pagination.appendChild(nextItem);
+    }
+
+    async function searchUsers() {
+      const query = document.getElementById('userSearch').value.trim();
+      if (!query) {
+        loadUsers();
+        return;
+      }
+      showSpinner(true, 'users');
+      try {
+        const users = await apiRequest(`/api/users/search?query=${encodeURIComponent(query)}`);
+        const tbody = document.getElementById('usersTable');
+        tbody.innerHTML = users.map(user => `
+          <tr>
+            <td>${sanitizeInput(user.virtualNumber)}</td>
+            <td>${sanitizeInput(user.email)}</td>
+            <td>₦${(user.depositBalance + user.earningBalance).toLocaleString()}</td>
+            <td>
+              <button class="btn btn-primary btn-sm" onclick="openFundModal('${user._id}')" aria-label="Fund wallet for ${sanitizeInput(user.virtualNumber)}">Fund</button>
+              <button class="btn btn-danger btn-sm" onclick="banUser('${user._id}')" ${user.isBanned ? 'disabled' : ''} aria-label="${user.isBanned ? 'User banned' : 'Ban user'}">${user.isBanned ? 'Banned' : 'Ban'}</button>
+            </td>
+          </tr>
+        `).join('');
+        document.getElementById('usersPagination').innerHTML = ''; // Clear pagination for search
+      } catch (error) {
+        showError('Failed to search users. Please try again.');
+      } finally {
+        showSpinner(false, 'users');
+      }
+    }
+
+    async function openFundModal(userId) {
+      document.getElementById('fundUserId').value = userId;
+      document.getElementById('fundAmount').value = '';
+      document.getElementById('fundError').textContent = '';
+      fundModal.show();
+    }
+
+    async function fundWallet() {
+      const userId = document.getElementById('fundUserId').value;
+      const amount = parseFloat(document.getElementById('fundAmount').value);
+      const errorDiv = document.getElementById('fundError');
+      if (!amount || amount <= 0 || amount > 1000000) {
+        showError('Enter an amount between 1 and 1,000,000', 'fundError');
+        return;
+      }
+      showSpinner(true, 'users');
+      try {
+        await apiRequest(`/api/users/${userId}/fund`, 'POST', { amount });
+        fundModal.hide();
+        loadUsers(currentPage);
+        showError('Wallet funded successfully', null);
+      } catch (error) {
+        showError('Failed to fund wallet. Please try again.', 'fundError');
+      } finally {
+        showSpinner(false, 'users');
+      }
+    }
+
+    async function banUser(userId) {
+      if (!confirm('Ban this user?')) return;
+      showSpinner(true, 'users');
+      try {
+        await apiRequest(`/api/users/${userId}`, 'PUT', { isBanned: true });
+        loadUsers(currentPage);
+        showError('User banned successfully', null);
+ marmarmar        } catch (error) {
+        showError('Failed to ban user. Please try again.');
+      } finally {
+        showSpinner(false, 'users');
+      }
+    }
+
+    async function loadQuestions() {
+      showSpinner(true, 'questions');
+      try {
+        const questions = await apiRequest('/api/questions');
+        const tbody = document.getElementById('questionsTable');
+        tbody.innerHTML = questions.map(q => `
+          <tr>
+            <td>${sanitizeInput(q.question)}</td>
+            <td>${sanitizeInput(q.difficulty)}</td>
+            <td>
+              <button class="btn btn-primary btn-sm" onclick='editQuestion(${JSON.stringify(q)})' aria-label="Edit question">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteQuestion('${q._id}')" aria-label="Delete question">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        showError('Failed to load questions. Please try again.');
+      } finally {
+        showSpinner(false, 'questions');
+      }
+    }
+
+    function editQuestion(question) {
+      document.getElementById('questionId').value = question._id || '';
+      document.getElementById('questionText').value = sanitizeInput(question.question) || '';
+      document.getElementById('option1').value = question.options && question.options[0] ? sanitizeInput(question.options[0]) : '';
+      document.getElementById('option2').value = question.options && question.options[1] ? sanitizeInput(question.options[1]) : '';
+      document.getElementById('option3').value = question.options && question.options[2] ? sanitizeInput(question.options[2]) : '';
+      document.getElementById('option4').value = question.options && question.options[3] ? sanitizeInput(question.options[3]) : '';
+      document.getElementById('questionAnswer').value = sanitizeInput(question.answer) || '';
+      document.getElementById('questionDifficulty').value = question.difficulty || 'easy';
+      document.getElementById('questionError').textContent = '';
+      questionModal.show();
+    }
+
+    async function saveQuestion() {
+      const id = document.getElementById('questionId').value;
+      const question = {
+        question: document.getElementById('questionText').value.trim(),
+        options: [
+          document.getElementById('option1').value.trim(),
+          document.getElementById('option2').value.trim(),
+          document.getElementById('option3').value.trim(),
+          document.getElementById('option4').value.trim()
+        ].filter(opt => opt),
+        answer: document.getElementById('questionAnswer').value.trim(),
+        difficulty: document.getElementById('questionDifficulty').value
+      };
+      const errorDiv = document.getElementById('questionError');
+      if (!question.question) {
+        showError('Question text is required', 'questionError');
+        return;
+      }
+      if (question.options.length < 2) {
+        showError('At least two options are required', 'questionError');
+        return;
+      }
+      if (!question.answer) {
+        showError('Answer is required', 'questionError');
+        return;
+      }
+      showSpinner(true, 'questions');
+      try {
+        await apiRequest(id ? `/api/questions/${id}` : '/api/questions', id ? 'PUT' : 'POST', question);
+        questionModal.hide();
+        loadQuestions();
+        showError('Question saved successfully', null);
+      } catch (error) {
+        showError('Failed to save question. Please try again.', 'questionError');
+      } finally {
+        showSpinner(false, 'questions');
+      }
+    }
+
+    async function deleteQuestion(id) {
+      if (!confirm('Delete this question?')) return;
+      showSpinner(true, 'questions');
+      try {
+        await apiRequest(`/api/questions/${id}`, 'DELETE');
+        loadQuestions();
+        showError('Question deleted successfully', null);
+      } catch (error) {
+        showError('Failed to delete question. Please try again.');
+      } finally {
+        showSpinner(false, 'questions');
+      }
+    }
+
+    async function loadBooks() {
+      showSpinner(true, 'books');
+      try {
+        const books = await apiRequest('/api/books');
+        const tbody = document.getElementById('booksTable');
+        tbody.innerHTML = books.map(b => `
+          <tr>
+            <td>${sanitizeInput(b.title)}</td>
+            <td>${sanitizeInput(b.status)}</td>
+            <td>
+              <button class="btn btn-success btn-sm" onclick="updateBookStatus('${b._id}', 'Approved')" ${b.status === 'Approved' ? 'disabled' : ''} aria-label="Approve book">Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="updateBookStatus('${b._id}', 'Rejected')" ${b.status === 'Rejected' ? 'disabled' : ''} aria-label="Reject book">Reject</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        showError('Failed to load books. Please try again.');
+      } finally {
+        showSpinner(false, 'books');
+      }
+    }
+
+    async function updateBookStatus(bookId, status) {
+      if (!confirm(`Set book status to ${status}?`)) return;
+      showSpinner(true, 'books');
+      try {
+        await apiRequest(`/api/books/${bookId}`, 'PUT', { status });
+        loadBooks();
+        showError(`Book status updated to ${status}`, null);
+      } catch (error) {
+        showError('Failed to update book status. Please try again.');
+      } finally {
+        showSpinner(false, 'books');
+      }
+    }
+
+    async function loadWithdrawals() {
+      showSpinner(true, 'withdrawals');
+      try {
+        const withdrawals = await apiRequest('/api/withdrawals');
+        const tbody = document.getElementById('withdrawalsTable');
+        tbody.innerHTML = withdrawals.map(w => `
+          <tr>
+            <td>${sanitizeInput(w.userId.virtualNumber)}</td>
+            <td>₦${w.amount.toLocaleString()}</td>
+            <td>${sanitizeInput(w.status)}</td>
+            <td>
+              <button class="btn btn-success btn-sm" onclick="updateWithdrawalStatus('${w._id}', 'Approved')" ${w.status === 'Approved' ? 'disabled' : ''} aria-label="Approve withdrawal">Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="updateWithdrawalStatus('${w._id}', 'Failed')" ${w.status === 'Failed' ? 'disabled' : ''} aria-label="Reject withdrawal">Reject</button>
+              <button class="btn btn-primary btn-sm" onclick="openWithdrawModal('${w.userId._id}', ${w.amount})" aria-label="Manual withdrawal">Manual</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        showError('Failed to load withdrawals. Please try again.');
+      } finally {
+        showSpinner(false, 'withdrawals');
+      }
+    }
+
+    async function updateWithdrawalStatus(id, status) {
+      if (!confirm(`Set withdrawal status to ${status}?`)) return;
+      showSpinner(true, 'withdrawals');
+      try {
+        await apiRequest(`/api/withdrawals/${id}`, 'PUT', { status });
+        loadWithdrawals();
+        showError(`Withdrawal status updated to ${status}`, null);
+      } catch (error) {
+        showError('Failed to update withdrawal. Please try again.');
+      } finally {
+        showSpinner(false, 'withdrawals');
+      }
+    }
+
+    async function openWithdrawModal(userId, amount) {
+      document.getElementById('withdrawUserId').value = userId;
+      document.getElementById('withdrawAmount').value = amount;
+      document.getElementById('withdrawError').textContent = '';
+      withdrawModal.show();
+    }
+
+    async function manualWithdraw() {
+      const userId = document.getElementById('withdrawUserId').value;
+      const amount = parseFloat(document.getElementById('withdrawAmount').value);
+      const errorDiv = document.getElementById('withdrawError');
+      if (!amount || amount <= 0 || amount > 1000000) {
+        showError('Enter an amount between 1 and 1,000,000', 'withdrawError');
+        return;
+      }
+      showSpinner(true, 'withdrawals');
+      try {
+        await apiRequest(`/api/users/${userId}/withdraw`, 'POST', { amount });
+        withdrawModal.hide();
+        loadWithdrawals();
+        showError('Manual withdrawal processed', null);
+      } catch (error) {
+        showError('Failed to process withdrawal. Please try again.', 'withdrawError');
+      } finally {
+        showSpinner(false, 'withdrawals');
+      }
+    }
+
+    async function loadPosts() {
+      showSpinner(true, 'posts');
+      try {
+        const posts = await apiRequest('/api/posts');
+        const tbody = document.getElementById('postsTable');
+        tbody.innerHTML = posts.map(p => `
+          <tr>
+            <td>${sanitizeInput(p.userId.virtualNumber)}</td>
+            <td>${sanitizeInput(p.description || 'Media')}</td>
+            <td>
+              <button class="btn btn-danger btn-sm" onclick="deletePost('${p._id}')" aria-label="Delete post">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (error) {
+        showError('Failed to load posts. Please try again.');
+      } finally {
+        showSpinner(false, 'posts');
+      }
+    }
+
+    async function deletePost(postId) {
+      if (!confirm('Delete this post?')) return;
+      showSpinner(true, 'posts');
+      try {
+        await apiRequest(`/api/posts/${postId}`, 'DELETE');
+        loadPosts();
+        showError('Post deleted successfully', null);
+      } catch (error) {
+        showError('Failed to delete post. Please try again.');
+      } finally {
+        showSpinner(false, 'posts');
+      }
+    }
+
+    // Initialize
+    document.getElementById('loginForm').addEventListener('submit', login);
+    if (localStorage.getItem('adminToken')) {
+      apiRequest('/api/profile')
+        .then(data => {
+          currentUser = data.user;
+          if (currentUser.isAdmin) {
+            document.getElementById('loginPage').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            document.getElementById('adminName').textContent = sanitizeInput(currentUser.virtualNumber);
+            showSection('dashboard');
+          } else {
+            logout();
+          }
+        })
+        .catch(() => logout());
+    }
+  </script>
+</body>
+</html>

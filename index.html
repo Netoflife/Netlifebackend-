@@ -1,0 +1,1882 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetEdu - Learn & Earn</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            color: #333;
+            line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            margin-bottom: 80px;
+        }
+        .sidebar {
+            background-color: #ededed;
+            color: #333;
+            width: 280px;
+            padding-top: 20px;
+            flex-shrink: 0;
+            box-shadow: 2px 0 5px rgba(0, 0, 0, 0.05);
+            transform: translateX(-280px);
+            transition: transform 0.3s ease-in-out;
+            z-index: 1000;
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+        }
+        .sidebar.open { transform: translateX(0); }
+        .sidebar-header { padding: 15px; text-align: center; border-bottom: 1px solid #ddd; }
+        .sidebar-header h5 { font-weight: bold; margin-bottom: 0; }
+        .sidebar-nav { width: 100%; padding: 0; list-style: none; }
+        .nav-item { padding: 0; margin-bottom: 0; }
+        .nav-link { display: flex; align-items: center; color: #333; padding: 15px 20px; text-decoration: none; transition: background-color 0.2s ease-in-out; border-bottom: 1px solid #e0e0e0; }
+        .nav-link:hover, .nav-link.active { background-color: #e0e0e0; color: #007bff; }
+        .nav-link i { margin-right: 15px; font-size: 1.2rem; }
+        .main-content { flex-grow: 1; padding: 80px 20px 20px; transition: margin-left 0.3s ease-in-out; margin-left: 0; }
+        .main-content.open { margin-left: 280px; }
+        .container { max-width: 1200px; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 0 15px rgba(0, 0, 0, 0.07); margin: 10px; flex-grow: 1; }
+        .tab-content { display: none; padding: 20px; }
+        .tab-content.active { display: block; }
+        .header { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; margin-bottom: 0; border-bottom: 1px solid #e0e0e0; background-color: #f0f0f0; position: fixed; top: 0; left: 0; right: 0; z-index: 999; }
+        .header h2 { font-weight: bold; margin: 0; color: #128C7E; }
+        .toggle-btn { background: none; border: none; color: #128C7E; font-size: 1.5rem; cursor: pointer; padding: 5px; z-index: 1001; position: fixed; top: 15px; right: 20px; }
+        .btn-primary { background-color: #25D366; border: none; border-radius: 5px; padding: 10px 15px; color: white; transition: background-color 0.3s ease; }
+        .btn-primary:hover { background-color: #128C7E; }
+        .btn-outline-primary { border-color: #25D366; color: #25D366; border-radius: 5px; transition: background-color 0.3s ease, color 0.3s ease; }
+        .btn-outline-primary:hover { background-color: #25D366; color: #fff; }
+        .fab-container { position: fixed; bottom: 20px; right: 20px; z-index: 1000; }
+        .fab { width: 60px; height: 60px; background-color: #25D366; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2rem; cursor: pointer; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2); }
+        .fab:hover { background-color: #128C7E; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1000; }
+        .modal-content { background-color: #fff; padding: 20px; border-radius: 8px; width: 90%; max-width: 500px; margin: 10% auto; }
+        .close-button { float: right; font-size: 1.5rem; cursor: pointer; }
+        .question-wrapper { margin-bottom: 20px; }
+        .answer-option { display: block; width: 100%; margin: 5px 0; padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9; cursor: pointer; }
+        .answer-option:hover { background-color: #e0e0e0; }
+        .answer-option:disabled { background-color: #ccc; cursor: not-allowed; }
+        .feedback-correct { color: green; font-weight: bold; }
+        .feedback-wrong { color: red; font-weight: bold; }
+        .post-card { background-color: #fff; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 15px; padding: 15px; }
+        .post-card-body img, .post-card-body video { max-width: 100%; border-radius: 8px; }
+        .post-actions { margin-top: 10px; }
+        .book-card { background-color: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 15px; }
+        .book-card img { width: 100%; height: 200px; object-fit: cover; border-radius: 8px; }
+        .book-details { margin: 10px 0; }
+        .book-actions { display: flex; gap: 10px; }
+        .pdf-viewer-container { width: 100%; height: 500px; }
+        .pdf-viewer-container iframe { width: 100%; height: 100%; border: none; }
+        .loading-spinner { text-align: center; padding: 20px; }
+        .loading-spinner::after { content: "Loading..."; font-weight: bold; }
+        .premium-status-card {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .premium-status-card h4 {
+            font-weight: bold;
+            color: #1a73e8;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+        }
+        .premium-status-card h4.not-premium {
+            color: #dc3545;
+        }
+        .premium-status-card ul {
+            list-style: none;
+            padding: 0;
+            margin-bottom: 15px;
+        }
+        .premium-status-card ul li {
+            margin-bottom: 8px;
+            font-size: 0.95em;
+            display: flex;
+            align-items: center;
+        }
+        .premium-status-card ul li i {
+            margin-right: 10px;
+            color: #28a745;
+        }
+        .premium-status-card ul li.disabled-benefit {
+            color: #6c757d;
+            text-decoration: line-through;
+        }
+        .premium-status-card ul li.disabled-benefit i {
+            color: #6c757d;
+        }
+        .premium-status-card .upgrade-button-container {
+            text-align: center;
+            margin-top: 20px;
+        }
+        #questionFeedHeader {
+            position: sticky;
+            top: 60px;
+            background-color: #fff;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+            z-index: 10;
+        }
+        #totalPointsDisplay {
+            text-align: right;
+            font-size: 1.1em;
+            font-weight: bold;
+            padding: 5px 0;
+        }
+        .chat-message {
+            background-color: #e0f7fa;
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin-bottom: 10px;
+            max-width: 80%;
+            align-self: flex-start;
+        }
+        .user-answer {
+            background-color: #e8f5e9;
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin-bottom: 10px;
+            max-width: 80%;
+            align-self: flex-end;
+            margin-left: auto;
+            text-align: right;
+        }
+        .chat-box {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: calc(100vh - 250px);
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+        .comment-section { margin-top: 15px; }
+        .comment-input { width: 100%; padding: 8px; border-radius: 5px; border: 1px solid #ddd; }
+        .comment-list { margin-top: 10px; max-height: 200px; overflow-y: auto; }
+        .comment { background-color: #f9f9f9; padding: 8px; border-radius: 5px; margin-bottom: 5px; }
+        .user-link { cursor: pointer; color: #007bff; text-decoration: underline; }
+        .user-link:hover { color: #0056b3; }
+    </style>
+</head>
+<body>
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h5>NetEdu</h5>
+        </div>
+        <nav class="sidebar-nav">
+            <li class="nav-item" id="homeNavItem"><a href="#" class="nav-link active" data-tab="home"><i class="fas fa-home"></i> Home</a></li>
+            <li class="nav-item" id="dashboardNavItem" style="display:none;"><a href="#" class="nav-link" data-tab="dashboard"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+            <li class="nav-item" id="answerNavItem" style="display:none;"><a href="#" class="nav-link" data-tab="answer"><i class="fas fa-question-circle"></i> Question Feed</a></li>
+            <li class="nav-item" id="feedNavItem" style="display:none;"><a href="#" class="nav-link" data-tab="feed"><i class="fas fa-rss"></i> STEM Feed</a></li>
+            <li class="nav-item" id="bookHubNavItem" style="display:none;"><a href="#" class="nav-link" data-tab="bookHub"><i class="fas fa-book"></i> Book Hub</a></li>
+            <li class="nav-item" id="libraryNavItem" style="display:none;"><a href="#" class="nav-link" data-tab="library"><i class="fas fa-books"></i> My Library</a></li>
+            <li class="nav-item" id="profileNavItem" style="display:none;"><a href="#" class="nav-link" data-tab="profile"><i class="fas fa-user"></i> Profile</a></li>
+            <li class="nav-item" id="loginNavItem"><a href="#" class="nav-link" data-tab="login"><i class="fas fa-sign-in-alt"></i> Login</a></li>
+            <li class="nav-item" id="registerNavItem"><a href="#" class="nav-link" data-tab="register"><i class="fas fa-user-plus"></i> Register</a></li>
+            <li class="nav-item" id="supportNavItem"><a href="#" class="nav-link" data-tab="support"><i class="fas fa-headset"></i> Support</a></li>
+            <li class="nav-item" id="logoutNavItem" style="display:none;"><a href="#" class="nav-link" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+        </nav>
+    </aside>
+
+    <div class="main-content">
+        <div class="header">
+            <h2>NetEdu</h2>
+            <button class="toggle-btn" id="sidebarToggle"><i class="fas fa-bars"></i></button>
+        </div>
+        <div class="container">
+            <div id="home" class="tab-content active">
+                <div class="jumbotron mb-4 bg-light rounded-3 p-5">
+                    <h1 class="display-4"><i class="fas fa-graduation-cap"></i> "Get Paid for What You Know"</h1>
+                    <p class="lead">At NetEdu, students earn by answering questions and tackling easy tasks. Join now and turn your knowledge into income!</p>
+                    <hr class="my-4">
+                    <p>Answer Questions, Earn Rewards, Learn More!</p>
+                    <p class="lead">
+                        <a class="btn btn-primary btn-lg" href="#" role="button" onclick="loadTab('register')">Get Started</a>
+                        <a class="btn btn-success btn-lg ms-3" href="#" role="button" onclick="loadTab('login')">Login</a>
+                    </p>
+                </div>
+                <footer class="mt-5">
+                    <hr>
+                    <p>© 2025 NetEdu. All rights reserved.</p>
+                    <ul class="list-inline">
+                        <li class="list-inline-item"><a href="https://drive.google.com/file/d/1os9CQMK_VMIoRVpAf2DSCr2CL_uDBN_B/view?usp=drivesdk" target="_blank">About us</a></li>
+                        <li class="list-inline-item"><a href="https://drive.google.com/file/d/1H-U9BYKPzn-KDeEV6RoRHxxQsL33iPH8/view?usp=drivesdk" target="_blank">Privacy and Policy</a></li>
+                        <li class="list-inline-item"><a href="https://drive.google.com/file/d/1b4K4pD8-kA9b_aL5hz68hwiYwsMZjP1S/view?usp=drivesdk" target="_blank">Terms and Condition</a></li>
+                    </ul>
+                </footer>
+            </div>
+
+            <div id="dashboard" class="tab-content">
+                <h3>Dashboard</h3>
+                <section id="dashboard-summary" class="mb-4">
+                    <div class="row row-cols-1 row-cols-md-4 g-4">
+                        <div class="col">
+                            <div class="card text-center">
+                                <div class="card-body">
+                                    <h5 class="card-title">Questions Answered Today</h5>
+                                    <p class="card-text" id="dailyQuestionsAnswered">0</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="card text-center">
+                                <div class="card-body">
+                                    <h5 class="card-title">Points Earned Today</h5>
+                                    <p class="card-text" id="pointsEarnedToday">0</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="card text-center">
+                                <div class="card-body">
+                                    <h5 class="card-title">Streak Counter</h5>
+                                    <p class="card-text" id="streakCounter">0-day streak</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="card text-center">
+                                <div class="card-body">
+                                    <h5 class="card-title">Time Spent Today</h5>
+                                    <p class="card-text" id="timeSpentToday">00:00</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                <section id="premiumStatus" class="mb-4">
+                </section>
+                <section id="balanceInfo" class="mb-4">
+                    <div class="card">
+                        <div class="card-header">Account Balances</div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <h5>Deposit Balance: ₦<span id="depositBalance">0.00</span></h5>
+                                    <button class="btn btn-sm btn-primary" onclick="addFunds()">Add Funds</button>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <h5>Earning Balance: ₦<span id="earningBalance">0.00</span></h5>
+                                    <button class="btn btn-sm btn-success" onclick="requestWithdrawal()">Withdraw</button>
+                                </div>
+                            </div>
+                            <small class="text-muted">Deposit balance is for in-app purchases. Earning balance is from sales/rewards and can be withdrawn.</small>
+                        </div>
+                    </div>
+                </section>
+                <section id="dashboard-progress">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">Progress Overview</h5>
+                            <div class="d-flex align-items-center mb-3">
+                                <span class="level-badge"><i class="fas fa-trophy"></i> <span id="userLevel">1</span></span>
+                                <span>Level <span id="userLevelText">1</span></span>
+                            </div>
+                            <h4 class="mb-3">Total Points: <strong id="totalPoints">0</strong></h4>
+                            <p class="mb-2">Activity Last 7 Days</p>
+                            <img src="https://via.placeholder.com/350x100/f0f0f0/cccccc?Text=Last%207%20Days%20Activity" alt="Activity Graph" class="img-fluid mb-3">
+                            <p class="mb-2">Challenge Completion: <strong id="challengeProgress">0/5 tasks</strong></p>
+                            <div class="progress">
+                                <div class="progress-bar" role="progressbar" style="width: 0%;" id="challengeProgressBar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <div id="answer" class="tab-content">
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Question Feed</h3>
+                        <div id="questionFeedHeader">
+                            <div class="alert alert-info mb-0" role="alert">Answer questions and earn points!</div>
+                            <div id="totalPointsDisplay"><strong>Total Points: 0</strong></div>
+                        </div>
+                        <button class="btn btn-primary btn-sm" id="startQuestionFeed">Start Answering</button>
+                        <div id="questionFeedContainer" class="mt-3 chat-box"></div>
+                        <div id="questionLimitMessage" class="alert alert-warning mt-3" style="display: none;">
+                            You have reached your daily question limit (5 questions). Upgrade to premium for unlimited questions!
+                            <button class="btn btn-info btn-sm ms-2" onclick="loadTab('dashboard')">Upgrade Now</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="feed" class="tab-content">
+                <h3>STEM Feed</h3>
+                <div id="stemFeedPosts">
+                    <div class="alert alert-info" role="alert" id="feedFirstTime" style="display: none;">
+                        💡 Explore. Learn. Inspire.<br>
+                        STEM Feed is your space to shine. Share knowledge, show skills, stay smart.<br>
+                        📲 Tap + to post. Swipe to keep learning.
+                    </div>
+                </div>
+            </div>
+
+            <div id="bookHub" class="tab-content">
+                <h3>Book Hub</h3>
+                <div id="bookHubAccessDenied" class="alert alert-danger" style="display: none;">
+                    Access Denied! The Book Hub is a **Premium Feature**. Please upgrade your account to access, upload, and buy books.
+                    <button class="btn btn-info btn-sm ms-2" onclick="loadTab('dashboard')">Upgrade Now</button>
+                </div>
+                <div id="bookHubContent" style="display: none;">
+                    <div class="mb-4">
+                        <button class="btn btn-primary me-2" onclick="showBookHubSection('browse')">Browse Books</button>
+                        <button class="btn btn-outline-primary" onclick="showBookHubSection('upload')">Upload Book</button>
+                    </div>
+                    <section id="bookUploadSection" style="display: none;">
+                        <div class="card">
+                            <div class="card-header">Upload a New Book</div>
+                            <div class="card-body">
+                                <form id="bookUploadForm">
+                                    <div class="mb-3">
+                                        <label for="bookFile" class="form-label">Book File (PDF/TXT)</label>
+                                        <input type="file" class="form-control" id="bookFile" accept=".pdf,.txt" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="bookTitle" class="form-label">Title</label>
+                                        <input type="text" class="form-control" id="bookTitle" placeholder="Enter book title" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="bookAuthor" class="form-label">Author</label>
+                                        <input type="text" class="form-control" id="bookAuthor" placeholder="Enter author name" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="bookTags" class="form-label">Tags (comma-separated)</label>
+                                        <input type="text" class="form-control" id="bookTags" placeholder="e.g., Physics, Math, Science">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="bookDescription" class="form-label">Description</label>
+                                        <textarea class="form-control" id="bookDescription" rows="3" placeholder="Provide a brief description of the book"></textarea>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="bookCoverImage" class="form-label">Cover Image</label>
+                                        <input type="file" class="form-control" id="bookCoverImage" accept="image/*">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Price</label><br>
+                                        <div class="form-check form-check-inline">
+                                            <input class="form-check-input" type="radio" name="bookPriceType" id="priceFree" value="free" checked>
+                                            <label class="form-check-label" for="priceFree">Free</label>
+                                        </div>
+                                        <div class="form-check form-check-inline">
+                                            <input class="form-check-input" type="radio" name="bookPriceType" id="pricePaid" value="paid">
+                                            <label class="form-check-label" for="pricePaid">Paid</label>
+                                        </div>
+                                        <div class="row mt-2" id="paidPriceOptions" style="display: none;">
+                                            <div class="col-md-6 mb-2">
+                                                <input type="number" class="form-control" id="bookPriceCredits" placeholder="Credits" min="0">
+                                            </div>
+                                            <div class="col-md-6">
+                                                <input type="number" class="form-control" id="bookPriceNaira" placeholder="Naira (₦)" min="0">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3 form-check">
+                                        <input type="checkbox" class="form-check-input" id="termsConfirm" required>
+                                        <label class="form-check-label" for="termsConfirm">I confirm I have the rights to distribute this material.</label>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary">Submit for Approval</button>
+                                </form>
+                                <small class="text-muted mt-2 d-block">Note: All uploaded books are subject to admin approval.</small>
+                            </div>
+                        </div>
+                    </section>
+                    <section id="bookBrowseSection">
+                        <div class="card">
+                            <div class="card-header">Browse Books</div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <input type="text" class="form-control" id="bookSearchInput" placeholder="Search by title, author, or tag...">
+                                </div>
+                                <div id="bookList" class="row row-cols-1 row-cols-md-3 g-4"></div>
+                                <div id="bookReviews" class="mt-4" style="display: none;">
+                                    <h5>Reviews & Comments</h5>
+                                    <div class="alert alert-info">Review/comment system to be integrated with backend.</div>
+                                </div>
+                                <div id="pdfViewerModal" class="modal" style="display: none;">
+                                    <div class="modal-content" style="width:90%; max-width: 900px; margin: 5% auto;">
+                                        <span class="close-button" onclick="closePdfViewerModal()">×</span>
+                                        <h4 id="pdfViewerTitle"></h4>
+                                        <div class="pdf-viewer-container mt-3">
+                                            <div id="pdfViewer"></div>
+                                        </div>
+                                        <small class="text-muted mt-2">Note: Enhanced PDF viewer powered by PDF.js.</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <div id="library" class="tab-content">
+                <h3>My Library</h3>
+                <div class="card">
+                    <div class="card-body">
+                        <div id="libraryList" class="row row-cols-1 row-cols-md-3 g-4"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="profile" class="tab-content">
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Profile</h3>
+                        <div class="text-center mb-3">
+                            <img src="https://via.placeholder.com/100" alt="Profile Picture" class="rounded-circle mb-2" id="profilePicturePreview">
+                            <input type="file" class="form-control form-control-sm" id="profilePictureInput" accept="image/*" style="display: none;">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('profilePictureInput').click();">Change Photo</button>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Full Name</label>
+                            <input type="text" class="form-control" id="profileFullName" readonly>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Date of Birth</label>
+                            <input type="date" class="form-control" id="profileDOB" readonly>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Email</label>
+                            <input type="email" class="form-control" id="profileEmail" readonly>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Expertise</label>
+                            <input type="text" class="form-control" id="profileExpertise" readonly>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Virtual Number</label>
+                            <input type="text" class="form-control" id="profileVirtualNumber" readonly>
+                        </div>
+                        <div class="mb-3" id="customizeVirtualNumberSection" style="display:none;">
+                            <label class="form-label">Customize Virtual Number (Premium)</label>
+                            <input type="text" class="form-control" id="customizeVirtualNumberInput" placeholder="Enter your custom name">
+                            <button class="btn btn-primary btn-sm mt-2" onclick="customizeVirtualNumber()">Apply Custom Name</button>
+                            <small class="form-text text-muted">Your customized virtual number will be [YourName]XX</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Education Level</label>
+                            <select class="form-select" id="profileEducation" disabled>
+                                <option>High School</option>
+                                <option>Undergraduate</option>
+                                <option>Graduate</option>
+                            </select>
+                        </div>
+                        <button id="editProfileBtn" class="btn btn-primary btn-sm" onclick="toggleProfileEdit(this)">Edit Profile</button>
+                        <p class="mt-2"><small>Premium: Customize Virtual Number, Show Full Name</small></p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="login" class="tab-content">
+                <div class="card">
+                    <div class="card-body">
+                        <h3 class="mb-4 text-center">Sign In to NetEdu</h3>
+                        <div class="mb-3">
+                            <label for="loginEmail" class="form-label"><i class="fas fa-envelope me-2"></i> Email Address</label>
+                            <input type="email" class="form-control" id="loginEmail" placeholder="Your email@address.com">
+                        </div>
+                        <div class="mb-3">
+                            <label for="loginPassword" class="form-label"><i class="fas fa-lock me-2"></i> Password</label>
+                            <input type="password" class="form-control" id="loginPassword" placeholder="Your secure password">
+                        </div>
+                        <button class="btn btn-primary btn-lg w-100 mb-3" onclick="loginUser()"><i class="fas fa-sign-in-alt me-2"></i> Login</button>
+                        <p class="text-center"><a href="#" class="text-muted" onclick="alert('Password reset functionality will be implemented here.');">Forgot Your Password?</a></p>
+                        <div class="d-grid gap-2 mt-3">
+                            <button class="btn btn-outline-primary" onclick="loadTab('register')"><i class="fas fa-user-plus me-2"></i> Register</button>
+                            <button class="btn btn-outline-primary" onclick="alert('Google login is not yet implemented.')"><i class="fab fa-google me-2"></i> Google</button>
+                            <button class="btn btn-outline-primary" onclick="alert('Facebook login is not yet implemented.')"><i class="fab fa-facebook me-2"></i> Facebook</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="register" class="tab-content">
+                <div class="card">
+                    <div class="card-body">
+                        <h3 class="mb-4 text-center">Create Your NetEdu Account</h3>
+                        <div class="mb-3">
+                            <label for="registerName" class="form-label"><i class="fas fa-user me-2"></i> Full Name</label>
+                            <input type="text" class="form-control" id="registerName" placeholder="Your Full Name">
+                        </div>
+                        <div class="mb-3">
+                            <label for="registerDOB" class="form-label"><i class="fas fa-calendar-alt me-2"></i> Date of Birth</label>
+                            <input type="date" class="form-control" id="registerDOB">
+                        </div>
+                        <div class="mb-3">
+                            <label for="registerEmail" class="form-label"><i class="fas fa-envelope me-2"></i> Email Address</label>
+                            <input type="email" class="form-control" id="registerEmail" placeholder="Your email@address.com">
+                        </div>
+                        <div class="mb-3">
+                            <label for="registerExpertise" class="form-label"><i class="fas fa-lightbulb me-2"></i> Expertise</label>
+                            <input type="text" class="form-control" id="registerExpertise" placeholder="Your area of expertise (e.g., Physics, Math)">
+                        </div>
+                        <div class="mb-3">
+                            <label for="registerPassword" class="form-label"><i class="fas fa-lock me-2"></i> Password</label>
+                            <input type="password" class="form-control" id="registerPassword" placeholder="Choose a secure password">
+                        </div>
+                        <div class="mb-3">
+                            <label for="registerConfirmPassword" class="form-label"><i class="fas fa-lock me-2"></i> Confirm Password</label>
+                            <input type="password" class="form-control" id="registerConfirmPassword" placeholder="Confirm your password">
+                        </div>
+                        <button class="btn btn-primary btn-lg w-100 mb-3" onclick="registerUser()">Register</button>
+                        <p class="text-center"><a href="#" class="text-muted" onclick="loadTab('login')">Already have an account? Login</a></p>
+                        <hr class="my-4">
+                        <p class="text-center">Or sign up with:</p>
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-outline-primary" onclick="alert('Google sign-up is not yet implemented.')"><i class="fab fa-google me-2"></i> Google</button>
+                            <button class="btn btn-outline-primary" onclick="alert('Facebook sign-up is not yet implemented.')"><i class="fab fa-facebook me-2"></i> Facebook</button>
+                        </div>
+                        <p class="mt-3 text-center">Your Virtual Number will be assigned upon successful registration.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="support" class="tab-content">
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Support</h3>
+                        <p>Contact our support team for any assistance.</p>
+                        <ul>
+                            <li>Email: support@netedu.com</li>
+                            <li>Phone: +1 (555) 123-4567</li>
+                        </ul>
+                        <button class="btn btn-primary" onclick="alert('Support ticket system will be implemented here.')">Submit a Ticket</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="fab-container" style="display:none;">
+        <div class="fab" onclick="openCreatePostModal()">+</div>
+    </div>
+
+    <div id="createPostModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeCreatePostModal()">×</span>
+            <h4>Create Post</h4>
+            <form id="postForm">
+                <div class="mb-3">
+                    <label for="postDescription" class="form-label">What's on your mind?</label>
+                    <textarea class="form-control" id="postDescription" rows="4" placeholder="Share your knowledge..."></textarea>
+                </div>
+                <div class="mb-3">
+                    <label for="postMedia" class="form-label">Add Media (Image/Video)</label>
+                    <input type="file" class="form-control" id="postMedia" accept="image/*,video/*">
+                </div>
+                <div id="postMediaPreview" class="post-preview-container" style="display: none;"></div>
+                <button type="submit" class="btn btn-primary">Post</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.min.js"></script>
+    <script>
+        const API_BASE_URL = 'http://localhost:5000/api';
+        let isLoggedIn = false;
+        let currentUser = null;
+        let totalPoints = 0;
+        let questionCounter = 0;
+        let timerInterval = null;
+        let currentQuestionData = null;
+        let currentTimerValue = 0;
+        const FREE_USER_QUESTION_LIMIT = 5;
+
+        const DIFFICULTY_SETTINGS = {
+            easy: { time: 40, points: 5 },
+            medium: { time: 50, points: 10 },
+            hard: { time: 60, points: 15 },
+        };
+
+        // DOM Elements
+        const sidebar = document.querySelector('.sidebar');
+        const mainContent = document.querySelector('.main-content');
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const questionFeedContainer = document.getElementById('questionFeedContainer');
+        const startQuestionFeedButton = document.getElementById('startQuestionFeed');
+        const totalPointsDisplay = document.getElementById('totalPointsDisplay');
+        const questionLimitMessage = document.getElementById('questionLimitMessage');
+        const dailyQuestionsAnsweredDisplay = document.getElementById('dailyQuestionsAnswered');
+        const pointsEarnedTodayDisplay = document.getElementById('pointsEarnedToday');
+        const streakCounterDisplay = document.getElementById('streakCounter');
+        const timeSpentTodayDisplay = document.getElementById('timeSpentToday');
+        const depositBalanceDisplay = document.getElementById('depositBalance');
+        const earningBalanceDisplay = document.getElementById('earningBalance');
+        const userLevelDisplay = document.getElementById('userLevel');
+        const userLevelTextDisplay = document.getElementById('userLevelText');
+        const challengeProgressDisplay = document.getElementById('challengeProgress');
+        const challengeProgressBar = document.getElementById('challengeProgressBar');
+        const premiumStatusSection = document.getElementById('premiumStatus');
+        const bookHubAccessDenied = document.getElementById('bookHubAccessDenied');
+        const bookHubContent = document.getElementById('bookHubContent');
+        const bookUploadSection = document.getElementById('bookUploadSection');
+        const bookBrowseSection = document.getElementById('bookBrowseSection');
+        const bookList = document.getElementById('bookList');
+        const libraryList = document.getElementById('libraryList');
+        const bookSearchInput = document.getElementById('bookSearchInput');
+        const pdfViewerModal = document.getElementById('pdfViewerModal');
+        const pdfViewerTitle = document.getElementById('pdfViewerTitle');
+        const pdfViewer = document.getElementById('pdfViewer');
+        const bookUploadForm = document.getElementById('bookUploadForm');
+        const stemFeedPosts = document.getElementById('stemFeedPosts');
+        const feedFirstTime = document.getElementById('feedFirstTime');
+        const createPostModal = document.getElementById('createPostModal');
+        const postForm = document.getElementById('postForm');
+        const postMediaInput = document.getElementById('postMedia');
+        const postMediaPreview = document.getElementById('postMediaPreview');
+        const profileFullName = document.getElementById('profileFullName');
+        const profileDOB = document.getElementById('profileDOB');
+        const profileEmail = document.getElementById('profileEmail');
+        const profileExpertise = document.getElementById('profileExpertise');
+        const profileVirtualNumber = document.getElementById('profileVirtualNumber');
+        const profileEducation = document.getElementById('profileEducation');
+        const customizeVirtualNumberSection = document.getElementById('customizeVirtualNumberSection');
+        const profilePictureInput = document.getElementById('profilePictureInput');
+        const libraryNavItem = document.getElementById('libraryNavItem');
+
+        // Sanitize input to prevent XSS
+        const sanitizeInput = (input) => {
+            if (typeof input !== 'string') return input;
+            const div = document.createElement('div');
+            div.textContent = input;
+            return div.innerHTML;
+        };
+
+        // Show Loading Spinner
+        const showLoading = (element) => {
+            const loadingHtml = '<div class="loading-spinner">Loading...</div>';
+            if (element) {
+                element.insertAdjacentHTML('afterbegin', loadingHtml);
+            }
+        };
+
+        // Hide Loading Spinner
+        const hideLoading = (element) => {
+            if (element) {
+                const spinner = element.querySelector('.loading-spinner');
+                if (spinner) {
+                    spinner.remove();
+                }
+            }
+        };
+
+        // API Fetch Helper
+        const apiFetch = async (url, options = {}) => {
+            const token = localStorage.getItem('token');
+            if (token) {
+                options.headers = { ...options.headers, 'Authorization': `Bearer ${token}` };
+            }
+            if (options.body instanceof FormData && options.headers && options.headers['Content-Type']) {
+                delete options.headers['Content-Type'];
+            }
+            try {
+                const response = await fetch(`${API_BASE_URL}${url}`, options);
+                const contentType = response.headers.get('content-type');
+                const isJson = contentType && contentType.includes('application/json');
+                if (!response.ok) {
+                    let errorData;
+                    if (isJson) {
+                        errorData = await response.json();
+                    } else {
+                        errorData = { error: `Server error: Expected JSON, got ${contentType}. Response: ${await response.text()}` };
+                    }
+                    if (response.status === 401) {
+                        logout();
+                        throw new Error('Session expired. Please log in again.');
+                    }
+                    throw new Error(errorData.error || 'Network error or unexpected response format.');
+                }
+                return isJson ? response.json() : response.text();
+            } catch (err) {
+                throw new Error(err.message || 'Network error');
+            }
+        };
+
+        // Initialize App
+        const init = async () => {
+            const token = localStorage.getItem('token');
+            if (token) {
+                try {
+                    const data = await apiFetch('/profile');
+                    currentUser = data.user;
+                    isLoggedIn = true;
+                    updateUIAfterLogin();
+                } catch (err) {
+                    console.error('Init error:', err);
+                    localStorage.removeItem('token');
+                    isLoggedIn = false;
+                    updateSidebarVisibility();
+                    alert(`Session expired or profile load failed: ${err.message}. Please log in again.`);
+                    loadTab('login');
+                }
+            } else {
+                updateSidebarVisibility();
+            }
+            setupEventListeners();
+            loadTab('home');
+        };
+
+        // Setup Event Listeners
+        const setupEventListeners = () => {
+            document.querySelectorAll('.nav-link[data-tab]').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const tabName = e.currentTarget.dataset.tab;
+                    if (tabName) {
+                        loadTab(tabName);
+                    }
+                });
+            });
+            sidebarToggle.addEventListener('click', toggleSidebar);
+            startQuestionFeedButton.addEventListener('click', startQuestionnaire);
+            bookUploadForm.addEventListener('submit', uploadBook);
+            postForm.addEventListener('submit', createPost);
+            postMediaInput.addEventListener('change', previewMedia);
+            bookSearchInput.addEventListener('input', loadSampleBooks);
+            profilePictureInput.addEventListener('change', updateProfilePicture);
+            document.getElementById('priceFree').addEventListener('change', () => togglePriceOptions(false));
+            document.getElementById('pricePaid').addEventListener('change', () => togglePriceOptions(true));
+            document.addEventListener('visibilitychange', handleVisibilityChange);
+            window.addEventListener('beforeunload', handleBeforeUnload);
+        };
+
+        // Toggle Sidebar
+        const toggleSidebar = () => {
+            sidebar.classList.toggle('open');
+            mainContent.classList.toggle('open');
+        };
+
+        // Handle Page Visibility
+        const handleVisibilityChange = async () => {
+            if (document.hidden) {
+                if (currentQuestionData && timerInterval) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                    try {
+                        await apiFetch('/questions/pause', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                questionId: currentQuestionData._id,
+                                timeLeft: currentTimerValue
+                            })
+                        });
+                        console.log('Timer paused and state saved.');
+                    } catch (error) {
+                        console.error('Failed to pause timer:', error);
+                    }
+                }
+            } else {
+                if (currentQuestionData && !timerInterval) {
+                    startTimer(currentQuestionData._id, currentQuestionData.answer, currentTimerValue);
+                    console.log('Timer resumed.');
+                }
+            }
+        };
+
+        // Handle Before Unload
+        const handleBeforeUnload = async () => {
+            if (currentQuestionData) {
+                try {
+                    await apiFetch('/questions/mark-incorrect-on-exit', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ questionId: currentQuestionData._id })
+                    });
+                    console.log('Last unanswered question marked incorrect on exit.');
+                } catch (error) {
+                    console.error('Failed to mark question incorrect on exit:', error);
+                }
+            }
+            currentQuestionData = null;
+            currentTimerValue = 0;
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+        };
+
+        // Load Tab
+        const loadTab = (tabName) => {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            if (document.getElementById('answer').classList.contains('active') && tabName !== 'answer' && currentQuestionData) {
+                apiFetch('/questions/pause', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        questionId: currentQuestionData._id,
+                        timeLeft: currentTimerValue
+                    })
+                }).catch(err => console.error('Failed to save question state on tab change:', err));
+            }
+
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
+            
+            const activeTab = document.getElementById(tabName);
+            const activeLink = document.querySelector(`[data-tab="${tabName}"]`);
+            if(activeTab) activeTab.classList.add('active');
+            if(activeLink) activeLink.classList.add('active');
+            
+            const fabContainer = document.querySelector('.fab-container');
+            if (isLoggedIn && tabName === 'feed') {
+                fabContainer.style.display = 'block';
+            } else {
+                fabContainer.style.display = 'none';
+            }
+
+            libraryNavItem.style.display = (isLoggedIn && tabName === 'bookHub') ? 'block' : 'none';
+
+            if (tabName === 'answer' && isLoggedIn) {
+                questionFeedContainer.innerHTML = '';
+                startQuestionFeedButton.style.display = 'block';
+            } else if (tabName === 'answer' && !isLoggedIn) {
+                questionFeedContainer.innerHTML = '<p class="text-danger">Please log in to answer questions.</p>';
+                startQuestionFeedButton.style.display = 'none';
+            } else if (tabName === 'feed' && isLoggedIn) {
+                loadStemFeed();
+            } else if (tabName === 'bookHub') {
+                checkBookHubAccess();
+            } else if (tabName === 'profile' && isLoggedIn) {
+                loadProfile();
+            } else if (tabName === 'library' && isLoggedIn) {
+                loadLibrary();
+            }
+        };
+
+        // Update Sidebar Visibility
+        const updateSidebarVisibility = () => {
+            document.getElementById('loginNavItem').style.display = isLoggedIn ? 'none' : 'block';
+            document.getElementById('registerNavItem').style.display = isLoggedIn ? 'none' : 'block';
+            document.getElementById('logoutNavItem').style.display = isLoggedIn ? 'block' : 'none';
+            document.getElementById('dashboardNavItem').style.display = isLoggedIn ? 'block' : 'none';
+            document.getElementById('answerNavItem').style.display = isLoggedIn ? 'block' : 'none';
+            document.getElementById('feedNavItem').style.display = isLoggedIn ? 'block' : 'none';
+            document.getElementById('bookHubNavItem').style.display = isLoggedIn ? 'block' : 'none';
+            document.getElementById('profileNavItem').style.display = isLoggedIn ? 'block' : 'none';
+            libraryNavItem.style.display = (isLoggedIn && document.querySelector('.nav-link[data-tab="bookHub"]').classList.contains('active')) ? 'block' : 'none';
+        };
+
+        // Update UI After Login
+        const updateUIAfterLogin = () => {
+            totalPoints = currentUser.totalPoints || 0;
+            dailyQuestionsAnsweredDisplay.textContent = currentUser.questionsAnsweredToday || 0;
+            pointsEarnedTodayDisplay.textContent = currentUser.pointsEarnedToday || 0;
+            streakCounterDisplay.textContent = `${currentUser.streak || 0}-day streak`;
+            timeSpentTodayDisplay.textContent = formatTime(currentUser.timeSpentToday || 0);
+            depositBalanceDisplay.textContent = (currentUser.depositBalance || 0).toFixed(2);
+            earningBalanceDisplay.textContent = (currentUser.earningBalance || 0).toFixed(2);
+            userLevelDisplay.textContent = currentUser.level || 1;
+            userLevelTextDisplay.textContent = currentUser.level || 1;
+            totalPointsDisplay.textContent = `Total Points: ${totalPoints}`;
+            
+            let premiumStatusHtml = '';
+            if (currentUser.isPremium) {
+                premiumStatusHtml = `
+                    <div class="premium-status-card">
+                        <h4>⭐ Premium</h4>
+                        <p>Your premium badge is active with following benefits 💫</p>
+                        <ul>
+                            <li>✔️ Double points earnings 🪙</li>
+                            <li>✔️ Ad-free Experience ⛓️‍💥</li>
+                            <li>✔️ Ability to customize your Virtual Number📝</li>
+                            <li>✔️ Unlimited Access to Book Hub 📚</li>
+                        </ul>
+                    </div>
+                `;
+            } else {
+                premiumStatusHtml = `
+                    <div class="premium-status-card">
+                        <h4 class="not-premium">🚀 Not Premium</h4>
+                        <ul>
+                            <li class="disabled-benefit"><i class="fas fa-times-circle"></i> Double points earnings</li>
+                            <li class="disabled-benefit"><i class="fas fa-times-circle"></i> Ad-free Experience</li>
+                            <li class="disabled-benefit"><i class="fas fa-times-circle"></i> Ability to customize your Virtual Number</li>
+                            <li class="disabled-benefit"><i class="fas fa-times-circle"></i> Unlimited Access to Book Hub</li>
+                        </ul>
+                        <div class="upgrade-button-container">
+                            <button class="btn btn-primary" onclick="upgradeToPremium()">Upgrade Now</button>
+                        </div>
+                    </div>
+                `;
+            }
+            premiumStatusSection.innerHTML = premiumStatusHtml;
+            updateSidebarVisibility();
+        };
+
+        // Format Time
+        const formatTime = (seconds) => {
+            const minutes = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        };
+
+        // Upgrade to Premium
+        const upgradeToPremium = async () => {
+            alert('Initiating premium upgrade...');
+            try {
+                const data = await apiFetch('/user/upgrade-premium', { method: 'POST' });
+                currentUser = data.user;
+                updateUIAfterLogin();
+                alert("You are now Premium! Enjoy your benefits.");
+            } catch (err) {
+                alert(`Failed to upgrade to premium: ${err.message}`);
+            }
+        };
+
+        // Login User
+        const loginUser = async () => {
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+            if (!email || !password) {
+                alert('Please enter both email and password.');
+                return;
+            }
+            const loginCard = document.querySelector('#login .card-body');
+            showLoading(loginCard);
+            try {
+                const data = await apiFetch('/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                localStorage.setItem('token', data.token);
+                currentUser = data.user;
+                isLoggedIn = true;
+                updateUIAfterLogin();
+                loadTab('dashboard');
+            } catch (err) {
+                alert(`Login failed: ${err.message}`);
+            } finally {
+                hideLoading(loginCard);
+            }
+        };
+
+        // Register User
+        const registerUser = async () => {
+            const fullName = document.getElementById('registerName').value;
+            const dob = document.getElementById('registerDOB').value;
+            const email = document.getElementById('registerEmail').value;
+            const expertise = document.getElementById('registerExpertise').value;
+            const password = document.getElementById('registerPassword').value;
+            const confirmPassword = document.getElementById('registerConfirmPassword').value;
+            if (!fullName || !dob || !email || !expertise || !password) {
+                alert('Please fill in all required fields.');
+                return;
+            }
+            if (password !== confirmPassword) {
+                alert('Passwords do not match.');
+                return;
+            }
+            const registerCard = document.querySelector('#register .card-body');
+            showLoading(registerCard);
+            try {
+                const data = await apiFetch('/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fullName, dob, email, expertise, password })
+                });
+                localStorage.setItem('token', data.token);
+                currentUser = data.user;
+                isLoggedIn = true;
+                updateUIAfterLogin();
+                loadTab('dashboard');
+            } catch (err) {
+                alert(`Registration failed: ${err.message}`);
+            } finally {
+                hideLoading(registerCard);
+            }
+        };
+
+        // Logout
+        const logout = () => {
+            localStorage.removeItem('token');
+            isLoggedIn = false;
+            currentUser = null;
+            totalPoints = 0;
+            questionCounter = 0;
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            currentQuestionData = null;
+            currentTimerValue = 0;
+            updateSidebarVisibility();
+            loadTab('home');
+        };
+
+        // Load Profile
+        const loadProfile = async (userId = null) => {
+            try {
+                const endpoint = userId ? `/profile/${userId}` : '/profile';
+                const data = await apiFetch(endpoint);
+                const user = data.user;
+                profileFullName.value = user.fullName || '';
+                profileDOB.value = user.dob ? user.dob.split('T')[0] : '';
+                profileEmail.value = user.email || '';
+                profileExpertise.value = user.expertise || '';
+                profileVirtualNumber.value = user.virtualNumber || '';
+                profileEducation.value = user.educationLevel || 'High School';
+                customizeVirtualNumberSection.style.display = (userId === currentUser?._id && user.isPremium) ? 'block' : 'none';
+                document.getElementById('editProfileBtn').style.display = userId === currentUser?._id ? 'block' : 'none';
+                profilePictureInput.style.display = userId === currentUser?._id ? 'block' : 'none';
+                document.querySelector('#profile .btn-outline-secondary').style.display = userId === currentUser?._id ? 'block' : 'none';
+                document.getElementById('profilePicturePreview').src = user.profilePicture || 'https://via.placeholder.com/100';
+            } catch (err) {
+                alert(`Error loading profile: ${err.message}`);
+            }
+        };
+
+        // Toggle Profile Edit
+        const toggleProfileEdit = (button) => {
+            const isReadonly = profileFullName.hasAttribute('readonly');
+            if (isReadonly) {
+                profileFullName.removeAttribute('readonly');
+                profileDOB.removeAttribute('readonly');
+                profileExpertise.removeAttribute('readonly');
+                profileEducation.removeAttribute('disabled');
+                button.textContent = 'Save Changes';
+                button.classList.replace('btn-primary', 'btn-success');
+                button.setAttribute('onclick', 'saveProfile(this)');
+            }
+        };
+
+        // Save Profile
+        const saveProfile = async (button) => {
+            const updatedProfile = {
+                fullName: profileFullName.value,
+                dob: profileDOB.value,
+                expertise: profileExpertise.value,
+                educationLevel: profileEducation.value,
+            };
+            const profileCardBody = document.querySelector('#profile .card-body');
+            showLoading(profileCardBody);
+            try {
+                const updatedUser = await apiFetch('/profile', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updatedProfile)
+                });
+                currentUser = updatedUser.user;
+                alert('Profile saved successfully!');
+            } catch (err) {
+                alert(`Error saving profile: ${err.message}`);
+            } finally {
+                hideLoading(profileCardBody);
+                profileFullName.setAttribute('readonly', true);
+                profileDOB.setAttribute('readonly', true);
+                profileExpertise.setAttribute('readonly', true);
+                profileEducation.setAttribute('disabled', true);
+                button.textContent = 'Edit Profile';
+                button.classList.replace('btn-success', 'btn-primary');
+                button.setAttribute('onclick', 'toggleProfileEdit(this)');
+            }
+        };
+
+        // Update Profile Picture
+        const updateProfilePicture = async (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    document.getElementById('profilePicturePreview').src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+                const profileCardBody = document.querySelector('#profile .card-body');
+                showLoading(profileCardBody);
+                try {
+                    const formData = new FormData();
+                    formData.append('profilePicture', file);
+                    const data = await apiFetch('/profile/picture', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    currentUser.profilePicture = data.profilePicture;
+                    alert("Profile picture updated successfully!");
+                } catch (err) {
+                    alert(`Failed to upload profile picture: ${err.message}`);
+                } finally {
+                    hideLoading(profileCardBody);
+                }
+            }
+        };
+
+        // Customize Virtual Number
+        const customizeVirtualNumber = async () => {
+            const customName = document.getElementById('customizeVirtualNumberInput').value;
+            if (!customName) {
+                alert('Please enter a custom name.');
+                return;
+            }
+            showLoading(customizeVirtualNumberSection);
+            try {
+                const data = await apiFetch('/customize-virtual-number', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ customName })
+                });
+                currentUser.virtualNumber = data.virtualNumber;
+                profileVirtualNumber.value = data.virtualNumber;
+                alert('Virtual number updated successfully!');
+            } catch (err) {
+                alert(`Failed to customize virtual number: ${err.message}`);
+            } finally {
+                hideLoading(customizeVirtualNumberSection);
+            }
+        };
+
+        // Add Funds
+        const addFunds = async () => {
+            const amountStr = prompt('Enter amount to add (₦):');
+            if (!amountStr) return;
+            const amount = parseFloat(amountStr);
+            if (isNaN(amount) || amount <= 0) {
+                alert('Please enter a valid amount.');
+                return;
+            }
+            const balanceInfoCard = document.querySelector('#balanceInfo .card-body');
+            showLoading(balanceInfoCard);
+            try {
+                const data = await apiFetch('/add-funds', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ amount })
+                });
+                currentUser.depositBalance = data.depositBalance;
+                depositBalanceDisplay.textContent = data.depositBalance.toFixed(2);
+                alert('Funds added successfully!');
+            } catch (err) {
+                alert(`Failed to add funds: ${err.message}`);
+            } finally {
+                hideLoading(balanceInfoCard);
+                updateUIAfterLogin();
+            }
+        };
+
+        // Request Withdrawal
+        const requestWithdrawal = async () => {
+            const amountStr = prompt('Enter amount to withdraw (₦):');
+            if (!amountStr) return;
+            const amount = parseFloat(amountStr);
+            if (isNaN(amount) || amount <= 0) {
+                alert('Please enter a valid amount.');
+                return;
+            }
+            const balanceInfoCard = document.querySelector('#balanceInfo .card-body');
+            showLoading(balanceInfoCard);
+            try {
+                const data = await apiFetch('/withdraw', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ amount })
+                });
+                currentUser.earningBalance = data.earningBalance;
+                earningBalanceDisplay.textContent = data.earningBalance.toFixed(2);
+                alert('Withdrawal requested successfully!');
+            } catch (err) {
+                alert(`Failed to request withdrawal: ${err.message}`);
+            } finally {
+                hideLoading(balanceInfoCard);
+                updateUIAfterLogin();
+            }
+        };
+
+        // Start Questionnaire
+        const startQuestionnaire = async () => {
+            if (!isLoggedIn) {
+                alert('Please log in to answer questions.');
+                loadTab('login');
+                return;
+            }
+            startQuestionFeedButton.style.display = 'none';
+            questionFeedContainer.innerHTML = '';
+            showLoading(questionFeedContainer);
+            try {
+                const data = await apiFetch('/questions/start');
+                if (data.noQuestionsAvailable) {
+                    questionFeedContainer.innerHTML = '<p class="text-info">No questions available at this time. Please check back later!</p>';
+                    return;
+                }
+                if (!currentUser.isPremium && data.questionsAnsweredToday >= FREE_USER_QUESTION_LIMIT) {
+                    questionLimitMessage.style.display = 'block';
+                    startQuestionFeedButton.style.display = 'block';
+                    questionFeedContainer.innerHTML = '';
+                    return;
+                }
+                questionLimitMessage.style.display = 'none';
+                totalPointsDisplay.textContent = `Total Points: ${currentUser.totalPoints || 0}`;
+                questionCounter = data.questionsAnsweredToday || 0;
+                displayQuestion(data.question, data.question.difficulty, data.timeLeft);
+            } catch (err) {
+                alert(`Error starting questionnaire: ${err.message}`);
+                startQuestionFeedButton.style.display = 'block';
+                questionFeedContainer.innerHTML = `<p class="text-danger">Could not start. Please try again.</p>`;
+            } finally {
+                hideLoading(questionFeedContainer);
+            }
+        };
+
+        // Load New Question
+        const loadNewQuestion = async () => {
+            showLoading(questionFeedContainer);
+            try {
+                const data = await apiFetch('/questions/next');
+                if (data.noQuestionsAvailable) {
+                    questionFeedContainer.innerHTML = '<p class="text-info">You have answered all available questions! Check back later for more.</p>';
+                    return;
+                }
+                if (!currentUser.isPremium && data.questionsAnsweredToday >= FREE_USER_QUESTION_LIMIT) {
+                    questionLimitMessage.style.display = 'block';
+                    startQuestionFeedButton.style.display = 'block';
+                    questionFeedContainer.innerHTML = '';
+                    return;
+                }
+                questionCounter = data.questionsAnsweredToday;
+                displayQuestion(data.question, data.question.difficulty, data.timeLeft);
+            } catch (err) {
+                questionFeedContainer.innerHTML = `<p class="text-danger">Error loading question: ${err.message}. Please try again.</p>`;
+                startQuestionFeedButton.style.display = 'block';
+            } finally {
+                hideLoading(questionFeedContainer);
+            }
+        };
+
+        // Display Question
+        const displayQuestion = (question, difficulty, timeLeft) => {
+            currentQuestionData = question;
+            currentTimerValue = timeLeft || DIFFICULTY_SETTINGS[difficulty].time;
+            const questionMessage = document.createElement('div');
+            questionMessage.className = 'chat-message';
+            questionMessage.id = `question-${question._id}`;
+            questionMessage.innerHTML = `
+                <p><strong>Question ${questionCounter + 1} (${difficulty}):</strong> ${sanitizeInput(question.question)}</p>
+                <div class="timer" id="timer-${question._id}">Time left: ${currentTimerValue}s</div>
+                <div class="answer-options-wrapper" id="options-${question._id}"></div>
+            `;
+            questionFeedContainer.appendChild(questionMessage);
+            const optionsWrapper = document.getElementById(`options-${question._id}`);
+            question.options.forEach(option => {
+                const button = document.createElement('button');
+                button.className = 'answer-option';
+                button.textContent = sanitizeInput(option);
+                button.onclick = () => checkAnswer(option, question._id, question.answer, question.difficulty);
+                optionsWrapper.appendChild(button);
+            });
+            questionFeedContainer.scrollTop = questionFeedContainer.scrollHeight;
+            startTimer(question._id, question.answer, currentTimerValue, difficulty);
+        };
+
+        // Start Timer
+        const startTimer = (questionId, correctAnswer, initialTime, difficulty) => {
+            if (timerInterval) clearInterval(timerInterval);
+            let timeLeft = initialTime;
+            const timerElement = document.getElementById(`timer-${questionId}`);
+            if (!timerElement) return;
+            timerElement.textContent = `Time left: ${timeLeft}s`;
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                currentTimerValue = timeLeft;
+                timerElement.textContent = `Time left: ${timeLeft}s`;
+                if (timeLeft <= 0) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                    disableAnswerOptions(questionId);
+                    submitAnswer(questionId, '', difficulty, true);
+                }
+            }, 1000);
+        };
+
+        // Disable Answer Options
+        const disableAnswerOptions = (questionId) => {
+            document.querySelectorAll(`#options-${questionId} button`).forEach(button => {
+                button.disabled = true;
+                button.style.cursor = 'not-allowed';
+            });
+        };
+
+        // Show Feedback
+        const showFeedback = (isCorrect, questionId, correctAnswer, pointsAwarded) => {
+            const feedbackElement = document.createElement('div');
+            feedbackElement.className = isCorrect ? 'user-answer feedback-correct' : 'user-answer feedback-wrong';
+            feedbackElement.textContent = isCorrect
+                ? `You: Correct! (+${pointsAwarded} points)`
+                : `You: Incorrect. The answer was: ${sanitizeInput(correctAnswer)}.`;
+            questionFeedContainer.appendChild(feedbackElement);
+            const nextActionMessage = document.createElement('div');
+            nextActionMessage.className = 'chat-message';
+            if (!currentUser.isPremium && currentUser.questionsAnsweredToday >= FREE_USER_QUESTION_LIMIT) {
+                nextActionMessage.innerHTML = `
+                    <p>You have reached your daily question limit (${FREE_USER_QUESTION_LIMIT} questions). Upgrade to premium for unlimited questions!</p>
+                    <button class="btn btn-info btn-sm ms-2" onclick="loadTab('dashboard')">Upgrade Now</button>
+                `;
+                startQuestionFeedButton.style.display = 'block';
+            } else {
+                nextActionMessage.innerHTML = `<p>Next question will appear shortly...</p>`;
+            }
+            questionFeedContainer.appendChild(nextActionMessage);
+            questionFeedContainer.scrollTop = questionFeedContainer.scrollHeight;
+            if (!currentUser.isPremium && currentUser.questionsAnsweredToday >= FREE_USER_QUESTION_LIMIT) {
+                currentQuestionData = null;
+                currentTimerValue = 0;
+            } else {
+                setTimeout(() => loadNewQuestion(), 2000);
+            }
+        };
+
+        // Check Answer
+        const checkAnswer = async (selectedAnswer, questionId, correctAnswer, difficulty) => {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            disableAnswerOptions(questionId);
+            await submitAnswer(questionId, selectedAnswer, difficulty, false);
+        };
+
+        // Submit Answer
+        const submitAnswer = async (questionId, selectedAnswer, difficulty, timedOut = false) => {
+            try {
+                const data = await apiFetch('/submit-answer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ questionId, selectedAnswer, timeLeft: timedOut ? 0 : currentTimerValue, timedOut })
+                });
+                currentUser.totalPoints = data.totalPoints;
+                currentUser.questionsAnsweredToday = data.questionsAnsweredToday;
+                currentUser.pointsEarnedToday = data.pointsEarnedToday;
+                currentUser.level = data.level;
+                currentUser.streak = data.streak;
+                currentUser.timeSpentToday = data.timeSpentToday;
+                totalPointsDisplay.textContent = `Total Points: ${data.totalPoints}`;
+                dailyQuestionsAnsweredDisplay.textContent = data.questionsAnsweredToday;
+                pointsEarnedTodayDisplay.textContent = data.pointsEarnedToday;
+                userLevelDisplay.textContent = data.level;
+                userLevelTextDisplay.textContent = data.level;
+                streakCounterDisplay.textContent = `${data.streak}-day streak`;
+                timeSpentTodayDisplay.textContent = formatTime(data.timeSpentToday);
+                showFeedback(data.isCorrect, questionId, data.correctAnswer, data.pointsAwarded);
+                currentQuestionData = null;
+                currentTimerValue = 0;
+            } catch (err) {
+                alert(`Error submitting answer: ${err.message}`);
+                showFeedback(false, questionId, currentQuestionData ? currentQuestionData.answer : "N/A", 0);
+                currentQuestionData = null;
+                currentTimerValue = 0;
+                startQuestionFeedButton.style.display = 'block';
+            }
+        };
+
+        // Load STEM Feed
+        const loadStemFeed = async () => {
+            showLoading(stemFeedPosts);
+            try {
+                const posts = await apiFetch('/posts');
+                stemFeedPosts.innerHTML = '';
+                if (posts.length === 0) {
+                    feedFirstTime.style.display = 'block';
+                } else {
+                    feedFirstTime.style.display = 'none';
+                    posts.forEach(post => {
+                        const postCard = document.createElement('div');
+                        postCard.className = 'post-card';
+                        postCard.innerHTML = `
+                            <div class="post-card-header d-flex align-items-center mb-2">
+                                <img src="${post.userId.profilePicture || 'https://via.placeholder.com/40'}" class="rounded-circle me-2" alt="user">
+                                <div>
+                                    <strong class="user-link" onclick="viewUserProfile('${post.userId._id}')">${sanitizeInput(post.userId.fullName || post.userId.virtualNumber)}</strong>
+                                    <small class="d-block text-muted">${new Date(post.createdAt).toLocaleString()}</small>
+                                </div>
+                            </div>
+                            <div class="post-card-body">
+                                <p>${sanitizeInput(post.description)}</p>
+                                ${post.mediaUrl ? (post.mediaUrl.endsWith('.mp4') || post.mediaUrl.endsWith('.mov') ? `<video src="${post.mediaUrl}" controls class="img-fluid rounded"></video>` : `<img src="${post.mediaUrl}" alt="Post media" class="img-fluid rounded">`) : ''}
+                                <div class="post-actions mt-2">
+                                    <button class="btn btn-outline-primary btn-sm" onclick="toggleLike('${post._id}', this)">
+                                        <i class="${post.likedBy.includes(currentUser?._id) ? 'fas' : 'far'} fa-thumbs-up"></i> Like (${post.likes || 0})
+                                    </button>
+                                    <button class="btn btn-outline-primary btn-sm" onclick="openCommentModal('${post._id}')">
+                                        <i class="far fa-comment"></i> Comment (${post.comments?.length || 0})
+                                    </button>
+                                    ${post.userId._id === (currentUser && currentUser._id) ? `<button class="btn btn-outline-danger btn-sm" onclick="deletePost('${post._id}')">Delete</button>` : ''}
+                                </div>
+                                <div class="comment-section" id="comment-section-${post._id}">
+                                    <div class="comment-list" id="comment-list-${post._id}"></div>
+                                    <input type="text" class="comment-input" id="comment-input-${post._id}" placeholder="Add a comment...">
+                                    <button class="btn btn-primary btn-sm mt-2" onclick="addComment('${post._id}')">Post Comment</button>
+                                </div>
+                            </div>
+                        `;
+                        stemFeedPosts.appendChild(postCard);
+                        loadComments(post._id);
+                    });
+                }
+            } catch (err) {
+                stemFeedPosts.innerHTML = `<p class="text-danger">Error loading posts: ${err.message}</p>`;
+            } finally {
+                hideLoading(stemFeedPosts);
+            }
+        };
+
+        // View User Profile
+        const viewUserProfile = (userId) => {
+            loadTab('profile');
+            loadProfile(userId);
+        };
+
+        // Open Comment Modal (optional for larger screens)
+        const openCommentModal = (postId) => {
+            const commentSection = document.getElementById(`comment-section-${postId}`);
+            commentSection.style.display = commentSection.style.display === 'none' ? 'block' : 'none';
+        };
+
+        // Add Comment
+        const addComment = async (postId) => {
+            const commentInput = document.getElementById(`comment-input-${postId}`);
+                        const commentText = commentInput.value.trim();
+                        if (!commentText) {
+                            alert('Please enter a comment.');
+                            return;
+                        }
+                        try {
+                            const data = await apiFetch(`/posts/${postId}/comment`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ comment: commentText })
+                            });
+                            commentInput.value = '';
+                            loadComments(postId);
+                        } catch (err) {
+                            alert(`Failed to add comment: ${err.message}`);
+                        }
+                    };
+            
+                    // Load Comments
+                    const loadComments = async (postId) => {
+                        const commentList = document.getElementById(`comment-list-${postId}`);
+                        try {
+                            const data = await apiFetch(`/posts/${postId}/comments`);
+                            commentList.innerHTML = '';
+                            data.comments.forEach(comment => {
+                                const commentDiv = document.createElement('div');
+                                commentDiv.className = 'comment';
+                                commentDiv.innerHTML = `
+                                    <strong class="user-link" onclick="viewUserProfile('${comment.userId._id}')">${sanitizeInput(comment.userId.fullName || comment.userId.virtualNumber)}</strong>
+                                    <p>${sanitizeInput(comment.text)}</p>
+                                    <small>${new Date(comment.createdAt).toLocaleString()}</small>
+                                `;
+                                commentList.appendChild(commentDiv);
+                            });
+                        } catch (err) {
+                            commentList.innerHTML = `<p class="text-danger">Error loading comments: ${err.message}</p>`;
+                        }
+                    };
+            
+                    // Toggle Like
+                    const toggleLike = async (postId, button) => {
+                        try {
+                            const data = await apiFetch(`/posts/${postId}/like`, { method: 'POST' });
+                            button.innerHTML = `<i class="${data.liked ? 'fas' : 'far'} fa-thumbs-up"></i> Like (${data.likes})`;
+                        } catch (err) {
+                            alert(`Failed to toggle like: ${err.message}`);
+                        }
+                    };
+            
+                    // Delete Post
+                    const deletePost = async (postId) => {
+                        if (!confirm('Are you sure you want to delete this post?')) return;
+                        try {
+                            await apiFetch(`/posts/${postId}`, { method: 'DELETE' });
+                            loadStemFeed();
+                            alert('Post deleted successfully.');
+                        } catch (err) {
+                            alert(`Failed to delete post: ${err.message}`);
+                        }
+                    };
+            
+                    // Open Create Post Modal
+                    const openCreatePostModal = () => {
+                        createPostModal.style.display = 'block';
+                        postMediaPreview.style.display = 'none';
+                        postMediaInput.value = '';
+                        document.getElementById('postDescription').value = '';
+                    };
+            
+                    // Close Create Post Modal
+                    const closeCreatePostModal = () => {
+                        createPostModal.style.display = 'none';
+                    };
+            
+                    // Preview Media
+                    const previewMedia = (event) => {
+                        const file = event.target.files[0];
+                        if (file) {
+                            postMediaPreview.style.display = 'block';
+                            postMediaPreview.innerHTML = '';
+                            if (file.type.startsWith('image/')) {
+                                const img = document.createElement('img');
+                                img.src = URL.createObjectURL(file);
+                                img.style.maxWidth = '100%';
+                                img.style.borderRadius = '8px';
+                                postMediaPreview.appendChild(img);
+                            } else if (file.type.startsWith('video/')) {
+                                const video = document.createElement('video');
+                                video.src = URL.createObjectURL(file);
+                                video.controls = true;
+                                video.style.maxWidth = '100%';
+                                video.style.borderRadius = '8px';
+                                postMediaPreview.appendChild(video);
+                            }
+                        }
+                    };
+            
+                    // Create Post
+                    const createPost = async (event) => {
+                        event.preventDefault();
+                        const description = document.getElementById('postDescription').value.trim();
+                        const mediaFile = postMediaInput.files[0];
+                        if (!description && !mediaFile) {
+                            alert('Please provide a description or media.');
+                            return;
+                        }
+                        const formData = new FormData();
+                        formData.append('description', description);
+                        if (mediaFile) {
+                            formData.append('media', mediaFile);
+                        }
+                        showLoading(createPostModal.querySelector('.modal-content'));
+                        try {
+                            await apiFetch('/posts', {
+                                method: 'POST',
+                                body: formData
+                            });
+                            closeCreatePostModal();
+                            loadStemFeed();
+                            alert('Post created successfully!');
+                        } catch (err) {
+                            alert(`Failed to create post: ${err.message}`);
+                        } finally {
+                            hideLoading(createPostModal.querySelector('.modal-content'));
+                        }
+                    };
+            
+                    // Check Book Hub Access
+                    const checkBookHubAccess = async () => {
+                        if (!isLoggedIn) {
+                            bookHubAccessDenied.style.display = 'block';
+                            bookHubContent.style.display = 'none';
+                            return;
+                        }
+                        try {
+                            const data = await apiFetch('/user/bookhub-access');
+                            if (data.hasAccess) {
+                                bookHubAccessDenied.style.display = 'none';
+                                bookHubContent.style.display = 'block';
+                                showBookHubSection('browse');
+                            } else {
+                                bookHubAccessDenied.style.display = 'block';
+                                bookHubContent.style.display = 'none';
+                            }
+                        } catch (err) {
+                            alert(`Error checking Book Hub access: ${err.message}`);
+                            bookHubAccessDenied.style.display = 'block';
+                            bookHubContent.style.display = 'none';
+                        }
+                    };
+            
+                    // Show Book Hub Section
+                    const showBookHubSection = (section) => {
+                        bookUploadSection.style.display = section === 'upload' ? 'block' : 'none';
+                        bookBrowseSection.style.display = section === 'browse' ? 'block' : 'none';
+                        if (section === 'browse') {
+                            loadSampleBooks();
+                        }
+                    };
+            
+                    // Toggle Price Options
+                    const togglePriceOptions = (show) => {
+                        document.getElementById('paidPriceOptions').style.display = show ? 'block' : 'none';
+                    };
+            
+                    // Upload Book
+                    const uploadBook = async (event) => {
+                        event.preventDefault();
+                        const bookFile = document.getElementById('bookFile').files[0];
+                        const title = document.getElementById('bookTitle').value.trim();
+                        const author = document.getElementById('bookAuthor').value.trim();
+                        const tags = document.getElementById('bookTags').value.trim().split(',').map(tag => tag.trim());
+                        const description = document.getElementById('bookDescription').value.trim();
+                        const coverImage = document.getElementById('bookCoverImage').files[0];
+                        const priceType = document.querySelector('input[name="bookPriceType"]:checked').value;
+                        const priceCredits = document.getElementById('bookPriceCredits').value;
+                        const priceNaira = document.getElementById('bookPriceNaira').value;
+                        const termsConfirmed = document.getElementById('termsConfirm').checked;
+            
+                        if (!bookFile || !title || !author || !termsConfirmed) {
+                            alert('Please fill in all required fields and confirm terms.');
+                            return;
+                        }
+            
+                        const formData = new FormData();
+                        formData.append('bookFile', bookFile);
+                        formData.append('title', title);
+                        formData.append('author', author);
+                        formData.append('tags', JSON.stringify(tags));
+                        formData.append('description', description);
+                        if (coverImage) {
+                            formData.append('coverImage', coverImage);
+                        }
+                        formData.append('priceType', priceType);
+                        if (priceType === 'paid') {
+                            formData.append('priceCredits', priceCredits || 0);
+                            formData.append('priceNaira', priceNaira || 0);
+                        }
+            
+                        showLoading(bookUploadSection);
+                        try {
+                            await apiFetch('/books/upload', {
+                                method: 'POST',
+                                body: formData
+                            });
+                            alert('Book uploaded successfully! Awaiting admin approval.');
+                            bookUploadForm.reset();
+                            togglePriceOptions(false);
+                            showBookHubSection('browse');
+                        } catch (err) {
+                            alert(`Failed to upload book: ${err.message}`);
+                        } finally {
+                            hideLoading(bookUploadSection);
+                        }
+                    };
+            
+                    // Load Sample Books
+                    const loadSampleBooks = async () => {
+                        const searchQuery = bookSearchInput.value.trim();
+                        showLoading(bookList);
+                        try {
+                            const books = await apiFetch(`/books?search=${encodeURIComponent(searchQuery)}`);
+                            bookList.innerHTML = '';
+                            if (books.length === 0) {
+                                bookList.innerHTML = '<p class="text-info">No books available. Be the first to upload one!</p>';
+                                return;
+                            }
+                            books.forEach(book => {
+                                const bookCard = document.createElement('div');
+                                bookCard.className = 'col';
+                                bookCard.innerHTML = `
+                                    <div class="book-card">
+                                        <img src="${book.coverImage || 'https://via.placeholder.com/150'}" alt="${sanitizeInput(book.title)}">
+                                        <div class="book-details">
+                                            <h5>${sanitizeInput(book.title)}</h5>
+                                            <p>By: <span class="user-link" onclick="viewUserProfile('${book.userId._id}')">${sanitizeInput(book.userId.fullName || book.userId.virtualNumber)}</span></p>
+                                            <p>${sanitizeInput(book.description || 'No description provided.')}</p>
+                                            <p><strong>Tags:</strong> ${sanitizeInput(book.tags.join(', '))}</p>
+                                            <p><strong>Price:</strong> ${book.priceType === 'free' ? 'Free' : `${book.priceNaira} ₦ / ${book.priceCredits} Credits`}</p>
+                                        </div>
+                                        <div class="book-actions">
+                                            <button class="btn btn-primary btn-sm" onclick="viewBook('${book._id}', '${sanitizeInput(book.title)}')">View</button>
+                                            ${book.priceType === 'paid' ? `<button class="btn btn-success btn-sm" onclick="buyBook('${book._id}')">Buy</button>` : ''}
+                                            ${book.userId._id === (currentUser && currentUser._id) ? `<button class="btn btn-danger btn-sm" onclick="deleteBook('${book._id}')">Delete</button>` : ''}
+                                        </div>
+                                        <div class="post-actions mt-2">
+                                            <button class="btn btn-outline-primary btn-sm" onclick="toggleLikeBook('${book._id}', this)">
+                                                <i class="${book.likedBy.includes(currentUser?._id) ? 'fas' : 'far'} fa-thumbs-up"></i> Like (${book.likes || 0})
+                                            </button>
+                                            <button class="btn btn-outline-primary btn-sm" onclick="openCommentModalBook('${book._id}')">
+                                                <i class="far fa-comment"></i> Comment (${book.comments?.length || 0})
+                                            </button>
+                                        </div>
+                                        <div class="comment-section" id="comment-section-book-${book._id}">
+                                            <div class="comment-list" id="comment-list-book-${book._id}"></div>
+                                            <input type="text" class="comment-input" id="comment-input-book-${book._id}" placeholder="Add a comment...">
+                                            <button class="btn btn-primary btn-sm mt-2" onclick="addCommentBook('${book._id}')">Post Comment</button>
+                                        </div>
+                                    </div>
+                                `;
+                                bookList.appendChild(bookCard);
+                                loadBookComments(book._id);
+                            });
+                        } catch (err) {
+                            bookList.innerHTML = `<p class="text-danger">Error loading books: ${err.message}</p>`;
+                        } finally {
+                            hideLoading(bookList);
+                        }
+                    };
+            
+                    // Toggle Like for Book
+                    const toggleLikeBook = async (bookId, button) => {
+                        try {
+                            const data = await apiFetch(`/books/${bookId}/like`, { method: 'POST' });
+                            button.innerHTML = `<i class="${data.liked ? 'fas' : 'far'} fa-thumbs-up"></i> Like (${data.likes})`;
+                        } catch (err) {
+                            alert(`Failed to toggle like: ${err.message}`);
+                        }
+                    };
+            
+                    // Open Comment Modal for Book
+                    const openCommentModalBook = (bookId) => {
+                        const commentSection = document.getElementById(`comment-section-book-${bookId}`);
+                        commentSection.style.display = commentSection.style.display === 'none' ? 'block' : 'none';
+                    };
+            
+                    // Add Comment for Book
+                    const addCommentBook = async (bookId) => {
+                        const commentInput = document.getElementById(`comment-input-book-${bookId}`);
+                        const commentText = commentInput.value.trim();
+                        if (!commentText) {
+                            alert('Please enter a comment.');
+                            return;
+                        }
+                        try {
+                            const data = await apiFetch(`/books/${bookId}/comment`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ comment: commentText })
+                            });
+                            commentInput.value = '';
+                            loadBookComments(bookId);
+                        } catch (err) {
+                            alert(`Failed to add comment: ${err.message}`);
+                        }
+                    };
+            
+                    // Load Book Comments
+                    const loadBookComments = async (bookId) => {
+                        const commentList = document.getElementById(`comment-list-book-${bookId}`);
+                        try {
+                            const data = await apiFetch(`/books/${bookId}/comments`);
+                            commentList.innerHTML = '';
+                            data.comments.forEach(comment => {
+                                const commentDiv = document.createElement('div');
+                                commentDiv.className = 'comment';
+                                commentDiv.innerHTML = `
+                                    <strong class="user-link" onclick="viewUserProfile('${comment.userId._id}')">${sanitizeInput(comment.userId.fullName || comment.userId.virtualNumber)}</strong>
+                                    <p>${sanitizeInput(comment.text)}</p>
+                                    <small>${new Date(comment.createdAt).toLocaleString()}</small>
+                                `;
+                                commentList.appendChild(commentDiv);
+                            });
+                        } catch (err) {
+                            commentList.innerHTML = `<p class="text-danger">Error loading comments: ${err.message}</p>`;
+                        }
+                    };
+            
+                    // Delete Book
+                    const deleteBook = async (bookId) => {
+                        if (!confirm('Are you sure you want to delete this book from Book Hub? It will remain in your library if purchased.')) return;
+                        try {
+                            await apiFetch(`/books/${bookId}`, { method: 'DELETE' });
+                            loadSampleBooks();
+                            alert('Book deleted successfully from Book Hub.');
+                        } catch (err) {
+                            alert(`Failed to delete book: ${err.message}`);
+                        }
+                    };
+            
+                    // View Book
+                    const viewBook = async (bookId, title) => {
+                        try {
+                            const book = await apiFetch(`/books/${bookId}`);
+                            if (!book.fileUrl) {
+                                alert('Book file not available.');
+                                return;
+                            }
+                            pdfViewerTitle.textContent = sanitizeInput(title);
+                            pdfViewer.innerHTML = '';
+                            pdfViewerModal.style.display = 'block';
+                            showLoading(pdfViewer);
+            
+                            pdfjsLib.getDocument(book.fileUrl).promise.then(pdf => {
+                                pdfViewer.innerHTML = `<canvas id="pdfCanvas"></canvas>`;
+                                const canvas = document.getElementById('pdfCanvas');
+                                const context = canvas.getContext('2d');
+                                pdf.getPage(1).then(page => {
+                                    const viewport = page.getViewport({ scale: 1.0 });
+                                    canvas.height = viewport.height;
+                                    canvas.width = viewport.width;
+                                    page.render({
+                                        canvasContext: context,
+                                        viewport: viewport
+                                    });
+                                });
+                                hideLoading(pdfViewer);
+                            }).catch(err => {
+                                pdfViewer.innerHTML = `<p class="text-danger">Error loading PDF: ${err.message}</p>`;
+                                hideLoading(pdfViewer);
+                            });
+                        } catch (err) {
+                            alert(`Error viewing book: ${err.message}`);
+                        }
+                    };
+            
+                    // Close PDF Viewer Modal
+                    const closePdfViewerModal = () => {
+                        pdfViewerModal.style.display = 'none';
+                        pdfViewer.innerHTML = '';
+                    };
+            
+                    // Buy Book
+                    const buyBook = async (bookId) => {
+                        try {
+                            const data = await apiFetch(`/books/${bookId}/buy`, { method: 'POST' });
+                            currentUser.depositBalance = data.depositBalance;
+                            depositBalanceDisplay.textContent = data.depositBalance.toFixed(2);
+                            alert('Book purchased successfully and added to your library!');
+                            loadLibrary();
+                        } catch (err) {
+                            alert(`Failed to buy book: ${err.message}`);
+                        }
+                    };
+            
+                    // Load Library
+                    const loadLibrary = async () => {
+                        showLoading(libraryList);
+                        try {
+                            const books = await apiFetch('/library');
+                            libraryList.innerHTML = '';
+                            if (books.length === 0) {
+                                libraryList.innerHTML = '<p class="text-info">Your library is empty. Purchase books from Book Hub to add them here!</p>';
+                                return;
+                            }
+                            books.forEach(book => {
+                                const bookCard = document.createElement('div');
+                                bookCard.className = 'col';
+                                bookCard.innerHTML = `
+                                    <div class="book-card">
+                                        <img src="${book.coverImage || 'https://via.placeholder.com/150'}" alt="${sanitizeInput(book.title)}">
+                                        <div class="book-details">
+                                            <h5>${sanitizeInput(book.title)}</h5>
+                                            <p>By: ${sanitizeInput(book.author)}</p>
+                                            <p>${sanitizeInput(book.description || 'No description provided.')}</p>
+                                            <p><strong>Tags:</strong> ${sanitizeInput(book.tags.join(', '))}</p>
+                                        </div>
+                                        <div class="book-actions">
+                                            <button class="btn btn-primary btn-sm" onclick="viewBook('${book._id}', '${sanitizeInput(book.title)}')">View</button>
+                                        </div>
+                                    </div>
+                                `;
+                                libraryList.appendChild(bookCard);
+                            });
+                        } catch (err) {
+                            libraryList.innerHTML = `<p class="text-danger">Error loading library: ${err.message}</p>`;
+                        } finally {
+                            hideLoading(libraryList);
+                        }
+                    };
+            
+                    // Initialize App
+                    init();
+                </script>
+            </body>
+            </html>
