@@ -7,7 +7,11 @@ const multer = require('multer');
 const path = require('path');
 const { body, validationResult } = require('express-validator');
 const fs = require('fs');
-require('dotenv').config();
+
+// ✅ Only needed for local dev — not in Railway
+if (process.env.NODE_ENV !== "production") {
+  require("dotenv").config();
+}
 
 const app = express();
 
