@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  </head>
+  <body>
+    <div id="chart" style="max-width:200px;"></div>
+
+    <script>
+      var options = {
+        chart: {
+          type: 'line',
+          width: 200,
+          height: 100,
+          toolbar: { show: false },
+          animations: { enabled: false }
+        },
+        series: [{
+          name: 'Activity',
+          data: [3, 2, 5, 1]
+        }],
+        xaxis: { labels: { show: false }, axisBorder: { show: false } },
+        yaxis: { labels: { show: false } },
+        grid: { show: false },
+        legend: { show: false },
+        tooltip: { enabled: false }
+      };
+      new ApexCharts(document.querySelector("#chart"), options).render();
+    </script>
+  </body>
+</html>
