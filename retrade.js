@@ -1,7 +1,34 @@
+'use strict';
+/**
+ * RawFlip Marketplace — Backend v8
+ * Upgrades over v6:
+ *   - Dynamic block-fee engine (₦100 per ₦5,000 block)
+ *   - Subscription system: Free / Basic (₦1,500/mo) / Pro (₦4,500/mo)
+ *   - Referral program with milestones, atomic rewards, abuse protection
+ *   - Telegram bot integration for proof submission & admin approval
+ *   - Wallet deposit/withdraw with admin approval workflow
+ *   - Transaction lifecycle: pending→proof_submitted→approved→completed
+ *   - All financial ops atomic via MongoDB sessions
+ *
+ * npm install (additions over v6):
+ *   node-telegram-bot-api
+ *   web-push
+ *   @resend/node
+ *
+ * New / updated .env:
+ *   RESEND_API_KEY=re_xxxxxxxxxxxx       (from resend.com dashboard)
+ *   VAPID_PUBLIC_KEY=<run: npx web-push generate-vapid-keys>
+ *   VAPID_PRIVATE_KEY=<run: npx web-push generate-vapid-keys>
+ *   VAPID_EMAIL=mailto:notifications@send.rawflip.shop
+ *   TELEGRAM_BOT_TOKEN=<your-bot-token>
+ *   TELEGRAM_ADMIN_CHAT_ID=<admin-chat-id>
+ *   MIN_DEPOSIT=5000
+ *   MIN_WITHDRAWAL=5000
+ */
 require('dotenv').config();
 
-const express      = require('express');
-const router = express.Router();
+const express      = require('express')
+const router = express.Router();;
 const mongoose     = require('mongoose');
 const bcrypt       = require('bcryptjs');
 const jwt          = require('jsonwebtoken');
@@ -246,16 +273,27 @@ const emailTemplates = {
     <h2>Welcome, ${u}!</h2><p>Your account is ready. Start exploring the marketplace.</p>
     <a href="${CLIENT_ORIGIN}" class="btn">Explore Listings</a>`) }),
 
-  verifyEmail: (u,token) => ({ subject:'Verify your RawFlip email', html: emailBase(`
-    <h2>Verify Your Email</h2><p>Hi ${u}, click below to verify your email address.</p>
-    <a href="${APP_URL}/api/auth/verify-email/${token}" class="btn">Verify Email</a>
-    <p style="margin-top:12px;font-size:.8rem;color:#4a4a6a">Link expires in 24 hours.</p>`) }),
+  verifyEmail: (u,code) => ({ subject:'Your RawFlip verification code', html: emailBase(`
+    <h2>Verify Your Email</h2>
+    <p>Hi <strong>${u}</strong>, enter this code on the RawFlip verification screen to activate your account:</p>
+    <div style='text-align:center;margin:28px 0'>
+      <div style='display:inline-block;background:#f4f6ff;border:2px solid #c7d0ff;border-radius:14px;padding:18px 36px'>
+        <span style='font-size:2.4rem;font-weight:800;letter-spacing:.25em;color:#3a3aff;font-family:monospace'>${code}</span>
+      </div>
+    </div>
+    <p style='text-align:center;font-size:.88rem;color:#4a4a6a'>⏱ Code expires in <strong>30 minutes</strong>. Do not share it with anyone.</p>
+    <p style='text-align:center;font-size:.8rem;color:#8888aa'>If you didn't create a RawFlip account you can safely ignore this email.</p>`) }),
 
-  resetPassword: (u,token) => ({ subject:'Reset your RawFlip password', html: emailBase(`
+  resetPassword: (u,code) => ({ subject:'Your RawFlip password reset code', html: emailBase(`
     <h2>Password Reset</h2>
-    <p>Hi ${u}, click below to reset your password.</p>
-    <a href="${CLIENT_ORIGIN}/reset-password?token=${token}" class="btn">Reset Password</a>
-    <p style="font-size:.8rem;color:#4a4a6a">Link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>`) }),
+    <p>Hi <strong>${u}</strong>, enter this code on the RawFlip password reset screen:</p>
+    <div style='text-align:center;margin:28px 0'>
+      <div style='display:inline-block;background:#fff4f4;border:2px solid #ffc7c7;border-radius:14px;padding:18px 36px'>
+        <span style='font-size:2.4rem;font-weight:800;letter-spacing:.25em;color:#cc2200;font-family:monospace'>${code}</span>
+      </div>
+    </div>
+    <p style='text-align:center;font-size:.88rem;color:#4a4a6a'>⏱ Code expires in <strong>30 minutes</strong>. Do not share it with anyone.</p>
+    <p style='text-align:center;font-size:.8rem;color:#8888aa'>If you didn't request a password reset you can safely ignore this email.</p>`) }),
 
   depositApproved: (u, amt, fee) => ({ subject:'Deposit Approved ✅', html: emailBase(`
     <h2>Deposit Approved!</h2>
@@ -532,6 +570,13 @@ const userSchema = new mongoose.Schema({
   refreshTokens:    { type:[String], default:[], select:false },
   emailVerifyToken: { type:String, default:null, select:false },
   emailVerifyExpires:{ type:Date, default:null, select:false },
+  // Short alphanumeric codes (verification & password-reset)
+  verifyCode:        { type:String, default:null, select:false },
+  verifyCodeExpires: { type:Date,   default:null, select:false },
+  verifyCodeSentAt:  { type:Date,   default:null, select:false },
+  resetCode:         { type:String, default:null, select:false },
+  resetCodeExpires:  { type:Date,   default:null, select:false },
+  resetCodeSentAt:   { type:Date,   default:null, select:false },
   twoFAEnabled:     { type:Boolean, default:false },
   twoFASecret:      { type:String, default:null, select:false },
   twoFABackupCodes: { type:[String], default:[], select:false },
@@ -1089,6 +1134,13 @@ const fingerprintDevice = req => crypto.createHash('sha256').update(`${req.ip||'
 
 // Returns the next unique user number atomically (no race condition).
 // Uses MongoDB findOneAndUpdate($inc) on the counters collection.
+// Unambiguous 6-char uppercase alphanumeric code (no 0/O/1/I confusion)
+function genCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(6);
+  return Array.from(bytes, b => chars[b % chars.length]).join('');
+}
+
 async function getNextUserNumber(session) {
   const doc = await Counter.findOneAndUpdate(
     { _id: 'userNumber' },
@@ -1525,7 +1577,8 @@ router.post('/auth/register', [
     }
   }
 
-  const token = crypto.randomBytes(32).toString('hex');
+  const verifyCode = genCode();
+  const codeExpiry = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
   // Atomically claim the next user number — eliminates the race condition
   const eaNumber = await getNextUserNumber();
   const isEA = eaNumber <= EARLY_ADOPTER_LIMIT;
@@ -1552,8 +1605,9 @@ router.post('/auth/register', [
     phone: req.body.phone || '',
     whatsapp: req.body.whatsapp || '',
     location: req.body.location || '',
-    emailVerifyToken:token,
-    emailVerifyExpires:new Date(Date.now()+24*60*60*1000),
+    verifyCode:        verifyCode,
+    verifyCodeExpires: codeExpiry,
+    verifyCodeSentAt:  new Date(),
     referredBy:referrer?._id || null,
     registrationIp:ip,
     isEarlyAdopter:isEA,
@@ -1584,48 +1638,44 @@ router.post('/auth/register', [
     }
   }
 
-  sendEmail(email, emailTemplates.verifyEmail(username, token)).catch(()=>{});
+  sendEmail(email, emailTemplates.verifyEmail(username, verifyCode)).catch(()=>{});
   // NOTE: Founding Member welcome email is sent AFTER email verification (in verify-email route)
   res.status(201).json({ ok:true, message:t('auth.register.success') });
 }));
 
-router.get('/auth/verify-email/:token', asyncH(async (req,res) => {
-  const user = await User.findOne({ emailVerifyToken:req.params.token, emailVerifyExpires:{ $gt:new Date() } });
-  if (!user) return res.redirect(`${CLIENT_ORIGIN}?verifyExpired=1`);
-  user.emailVerified = true;
-  user.emailVerifyToken = null;
-  user.emailVerifyExpires = null;
+// POST /auth/verify-code — submit 6-char code to verify email
+router.post('/auth/verify-code', [
+  body('email').isEmail().normalizeEmail(),
+  body('code').isString().trim().isLength({ min:4, max:8 }).toUpperCase(),
+], validate, authLimiter, asyncH(async (req, res) => {
+  const { email, code } = req.body;
+  const user = await User.findOne({ email })
+    .select('+verifyCode +verifyCodeExpires +verifyCodeSentAt emailVerified isEarlyAdopter earlyAdopterNumber username');
+  if (!user) return res.status(400).json({ error: 'Invalid or expired code.' });
+  if (user.emailVerified) return res.json({ ok: true, alreadyVerified: true });
+  if (!user.verifyCode || !user.verifyCodeExpires || user.verifyCodeExpires < new Date())
+    return res.status(400).json({ error: 'Code expired. Request a new one.', expired: true });
+  if (user.verifyCode.toUpperCase() !== code.toUpperCase())
+    return res.status(400).json({ error: 'Incorrect code. Check your email and try again.' });
+  // Code correct — activate account
+  user.emailVerified    = true;
+  user.verifyCode       = null;
+  user.verifyCodeExpires= null;
+  user.verifyCodeSentAt = null;
   await user.save();
-  // Process referral email-verify reward
   processReferralEmailVerify(user).catch(()=>{});
-  // Send Founding Member welcome email & in-app notification AFTER verification
   if (user.isEarlyAdopter && user.earlyAdopterNumber) {
     sendEmail(user.email, emailTemplates.foundingMember(user.username, user.earlyAdopterNumber)).catch(()=>{});
     sendNotification({
-      recipient: user._id,
-      type: 'system',
-      title: '🏆 Welcome, Founding Member!',
-      message: `You are Founding Member No. ${user.earlyAdopterNumber} of 200. Enjoy 6 months of free premium access, zero fees, and unlimited listings!`,
-      link: '/subscription',
+      recipient: user._id, type:'system',
+      title:'🏆 Welcome, Founding Member!',
+      message:`You are Founding Member No. ${user.earlyAdopterNumber} of 200. Enjoy 6 months of free premium access, zero fees, and unlimited listings!`,
+      link:'/subscription',
     }).catch(()=>{});
   }
-  res.redirect(`${CLIENT_ORIGIN}?verified=1`);
-}));
-
-// POST /auth/resend-verification — resend email verify link
-router.post('/auth/resend-verification', [
-  body('email').isEmail().normalizeEmail(),
-], validate, asyncH(async (req, res) => {
-  const user = await User.findOne({ email: req.body.email }).select('emailVerified emailVerifyToken emailVerifyExpires username email');
-  // Always respond OK to prevent email enumeration
-  if (!user || user.emailVerified) return res.json({ ok: true });
-  const token = crypto.randomBytes(32).toString('hex');
-  user.emailVerifyToken   = token;
-  user.emailVerifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  await user.save();
-  sendEmail(user.email, emailTemplates.verifyEmail(user.username, token)).catch(() => {});
   res.json({ ok: true });
 }));
+
 
 router.post('/auth/login', [
   body('email').isEmail().normalizeEmail(),
@@ -1740,39 +1790,86 @@ router.get('/auth/google/callback', passport.authenticate('google', { session:fa
   })
 );
 
-// Resend verification email handler (shared by both route names)
-async function handleResendVerify(req, res) {
-  const user = await User.findOne({ email:req.body.email, emailVerified:false });
-  if (!user) return res.json({ ok:true }); // Don't leak whether email exists
-  const token = crypto.randomBytes(32).toString('hex');
-  user.emailVerifyToken = token;
-  user.emailVerifyExpires = new Date(Date.now()+24*60*60*1000);
+// POST /auth/resend-verify-code — resend email verification code (60s cooldown)
+async function handleResendVerifyCode(req, res) {
+  const user = await User.findOne({ email: req.body.email })
+    .select('+verifyCode +verifyCodeExpires +verifyCodeSentAt emailVerified username email');
+  if (!user || user.emailVerified) return res.json({ ok: true }); // don't leak
+  // 60-second cooldown
+  if (user.verifyCodeSentAt && Date.now() - user.verifyCodeSentAt.getTime() < 60_000)
+    return res.status(429).json({ error: 'Please wait 60 seconds before requesting a new code.', tooSoon: true,
+      waitMs: 60_000 - (Date.now() - user.verifyCodeSentAt.getTime()) });
+  const code = genCode();
+  user.verifyCode        = code;
+  user.verifyCodeExpires = new Date(Date.now() + 30 * 60 * 1000);
+  user.verifyCodeSentAt  = new Date();
   await user.save();
-  sendEmail(user.email, emailTemplates.verifyEmail(user.username, token)).catch(()=>{});
-  res.json({ ok:true });
+  sendEmail(user.email, emailTemplates.verifyEmail(user.username, code)).catch(()=>{});
+  res.json({ ok: true, expiresAt: user.verifyCodeExpires.toISOString() });
 }
-// Both endpoint names — frontend has used both at various times
-router.post('/auth/resend-verify',        [body('email').isEmail().normalizeEmail()], validate, asyncH(handleResendVerify));
-router.post('/auth/resend-verification',  [body('email').isEmail().normalizeEmail()], validate, asyncH(handleResendVerify));
+// Both names for compatibility
+router.post('/auth/resend-verify',       [body('email').isEmail().normalizeEmail()], validate, authLimiter, asyncH(handleResendVerifyCode));
+router.post('/auth/resend-verification', [body('email').isEmail().normalizeEmail()], validate, authLimiter, asyncH(handleResendVerifyCode));
 
 router.post('/auth/forgot-password', [body('email').isEmail().normalizeEmail()], validate, strictLimiter, asyncH(async (req,res) => {
-  const user = await User.findOne({ email:req.body.email });
+  const user = await User.findOne({ email:req.body.email })
+    .select('+resetCode +resetCodeExpires +resetCodeSentAt username email');
   if (user) {
-    const token = crypto.randomBytes(32).toString('hex');
-    user.emailVerifyToken = token; user.emailVerifyExpires = new Date(Date.now()+60*60*1000);
+    // 60-second cooldown
+    if (user.resetCodeSentAt && Date.now() - user.resetCodeSentAt.getTime() < 60_000)
+      return res.status(429).json({ error: 'Please wait 60 seconds before requesting a new code.', tooSoon: true,
+        waitMs: 60_000 - (Date.now() - user.resetCodeSentAt.getTime()) });
+    const code = genCode();
+    user.resetCode        = code;
+    user.resetCodeExpires = new Date(Date.now() + 30 * 60 * 1000);
+    user.resetCodeSentAt  = new Date();
     await user.save();
-    sendEmail(user.email, emailTemplates.resetPassword(user.username, token)).catch(()=>{});
+    sendEmail(user.email, emailTemplates.resetPassword(user.username, code)).catch(()=>{});
   }
-  res.json({ ok:true, message:'If that email exists, a reset link has been sent.' });
+  // Always respond OK — never reveal whether the email exists
+  res.json({ ok: true });
 }));
 
-router.post('/auth/reset-password', [body('token').exists(), body('password').isLength({ min:8 }).matches(/[A-Z]/).matches(/[0-9]/)], validate, asyncH(async (req,res) => {
-  const user = await User.findOne({ emailVerifyToken:req.body.token, emailVerifyExpires:{ $gt:new Date() } });
-  if (!user) return res.status(400).json({ error:'Invalid or expired token' });
-  user.password = req.body.password; user.emailVerifyToken = null; user.emailVerifyExpires = null;
+router.post('/auth/reset-password', [
+  body('email').isEmail().normalizeEmail(),
+  body('code').isString().trim().isLength({ min:4, max:8 }),
+  body('password').isLength({ min:8 }).matches(/[A-Z]/).matches(/[0-9]/),
+], validate, authLimiter, asyncH(async (req,res) => {
+  const { email, code, password } = req.body;
+  const user = await User.findOne({ email })
+    .select('+resetCode +resetCodeExpires +resetCodeSentAt password');
+  if (!user || !user.resetCode || !user.resetCodeExpires || user.resetCodeExpires < new Date())
+    return res.status(400).json({ error: 'Code expired. Request a new one.', expired: true });
+  if (user.resetCode.toUpperCase() !== code.toUpperCase())
+    return res.status(400).json({ error: 'Incorrect code. Check your email and try again.' });
+  user.password         = password;
+  user.resetCode        = null;
+  user.resetCodeExpires = null;
+  user.resetCodeSentAt  = null;
   await user.save();
   clearAuthCookies(res);
-  res.json({ ok:true });
+  res.json({ ok: true });
+}));
+
+// GET /auth/code-status?email=...&type=verify|reset
+// Returns expiry info so the frontend can resume a live countdown after page reload
+router.get('/auth/code-status', asyncH(async (req, res) => {
+  const { email, type } = req.query;
+  if (!email || !['verify','reset'].includes(type)) return res.status(400).json({ error:'Bad params' });
+  const field = type === 'verify'
+    ? '+verifyCode +verifyCodeExpires +verifyCodeSentAt'
+    : '+resetCode  +resetCodeExpires  +resetCodeSentAt';
+  const user = await User.findOne({ email: email.trim().toLowerCase() }).select(field + ' emailVerified');
+  if (!user) return res.json({ exists: false });
+  if (type === 'verify' && user.emailVerified) return res.json({ exists: true, alreadyVerified: true });
+  const expiresAt  = type==='verify' ? user.verifyCodeExpires  : user.resetCodeExpires;
+  const sentAt     = type==='verify' ? user.verifyCodeSentAt   : user.resetCodeSentAt;
+  const hasCode    = !!(type==='verify' ? user.verifyCode : user.resetCode);
+  res.json({
+    exists: true, hasCode,
+    expiresAt:  expiresAt  ? expiresAt.toISOString()  : null,
+    sentAt:     sentAt     ? sentAt.toISOString()     : null,
+  });
 }));
 
 // Change password handler — shared by both routes
@@ -4777,47 +4874,3 @@ mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS:5000 })
   .catch(err=>{ console.error('[DB] Error:', err.message); process.exit(1); });
 
 module.exports = { app, server };
-
-/*
-==========================================================
-UPDATED .env for v7
-==========================================================
-MONGO_URI=mongodb://localhost:27017/rawflip
-JWT_SECRET=<min-32-chars>
-JWT_REFRESH_SECRET=<different-min-32-chars>
-TOTP_ENCRYPTION_KEY=<min-32-chars>
-PORT=5000
-NODE_ENV=development
-CLIENT_ORIGIN=https://rawflip.shop
-APP_URL=https://rawflip-backend.onrender.com
-NGN_USD_RATE=1600
-MIN_DEPOSIT=5000
-MIN_WITHDRAWAL=5000
-
-RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxx              # from resend.com dashboard
-#SMTP_USER=your_gmail@gmail.com
-#SMTP_PASS=your_gmail_app_password
-
-GOOGLE_CLIENT_ID=xxx
-GOOGLE_CLIENT_SECRET=xxx
-GOOGLE_CALLBACK_URL=http://localhost:5000/api/auth/google/callback
-
-ELASTIC_NODE=http://localhost:9200
-ELASTIC_API_KEY=
-
-TELEGRAM_BOT_TOKEN=your-bot-token
-TELEGRAM_ADMIN_CHAT_ID=your-admin-chat-id
-
-BANK_NAME=RawFlip Payments Ltd
-BANK_ACCOUNT=0000000000
-BANK_ACCOUNT_NAME=RawFlip Escrow
-
-# Support — added v20
-# The support email address is protected in source code.
-# It is built at runtime from character array — do not add it here.
-==========================================================
-
-Additional npm install:
-npm install node-telegram-bot-api
-==========================================================
-*/
