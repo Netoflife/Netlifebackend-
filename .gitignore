@@ -1,8 +1,4 @@
-.env
 node_modules/
-node_modules/
-.env
 uploads/
 logs/
-*.log
-*.rdb
+.env
