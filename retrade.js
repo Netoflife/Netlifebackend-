@@ -35,9 +35,14 @@ const PORT               = parseInt(process.env.PORT)  || 5000;
 const MONGO_URI          = process.env.MONGO_URI       || 'mongodb://localhost:27017/rawflip';
 const JWT_SECRET         = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
-const CLIENT_ORIGIN      = process.env.CLIENT_ORIGIN   || 'https://rawflip.shop';
-const APP_URL            = process.env.APP_URL          || 'http://localhost:5000';
 const IS_PROD            = process.env.NODE_ENV         === 'production';
+const CLIENT_ORIGIN      = process.env.CLIENT_ORIGIN   || 'https://rawflip.shop';
+// APP_URL is the publicly reachable base URL of this backend server.
+// In production it must be set in .env (e.g. https://rawflip-backend.onrender.com).
+// If not set, fall back to CLIENT_ORIGIN in prod so email links are never broken,
+// or localhost:5000 in development.
+const APP_URL            = process.env.APP_URL
+  || (IS_PROD ? CLIENT_ORIGIN : 'http://localhost:5000');
 const VAPID_PUBLIC_KEY   = process.env.VAPID_PUBLIC_KEY  || '';
 const VAPID_PRIVATE_KEY  = process.env.VAPID_PRIVATE_KEY || '';
 const VAPID_EMAIL        = process.env.VAPID_EMAIL       || 'mailto:admin@rawflip.com';
@@ -245,6 +250,12 @@ const emailTemplates = {
     <h2>Verify Your Email</h2><p>Hi ${u}, click below to verify your email address.</p>
     <a href="${APP_URL}/api/auth/verify-email/${token}" class="btn">Verify Email</a>
     <p style="margin-top:12px;font-size:.8rem;color:#4a4a6a">Link expires in 24 hours.</p>`) }),
+
+  resetPassword: (u,token) => ({ subject:'Reset your RawFlip password', html: emailBase(`
+    <h2>Password Reset</h2>
+    <p>Hi ${u}, click below to reset your password.</p>
+    <a href="${CLIENT_ORIGIN}/reset-password?token=${token}" class="btn">Reset Password</a>
+    <p style="font-size:.8rem;color:#4a4a6a">Link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>`) }),
 
   depositApproved: (u, amt, fee) => ({ subject:'Deposit Approved ✅', html: emailBase(`
     <h2>Deposit Approved!</h2>
@@ -1750,10 +1761,7 @@ router.post('/auth/forgot-password', [body('email').isEmail().normalizeEmail()],
     const token = crypto.randomBytes(32).toString('hex');
     user.emailVerifyToken = token; user.emailVerifyExpires = new Date(Date.now()+60*60*1000);
     await user.save();
-    sendEmail(user.email, { subject:'Reset your RawFlip password', html: emailBase(`
-      <h2>Password Reset</h2><p>Click below to reset your password.</p>
-      <a href="${CLIENT_ORIGIN}/reset-password?token=${token}" class="btn">Reset Password</a>
-      <p style="font-size:.8rem;color:#4a4a6a">Link expires in 1 hour.</p>`) }).catch(()=>{});
+    sendEmail(user.email, emailTemplates.resetPassword(user.username, token)).catch(()=>{});
   }
   res.json({ ok:true, message:'If that email exists, a reset link has been sent.' });
 }));
@@ -4769,3 +4777,47 @@ mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS:5000 })
   .catch(err=>{ console.error('[DB] Error:', err.message); process.exit(1); });
 
 module.exports = { app, server };
+
+/*
+==========================================================
+UPDATED .env for v7
+==========================================================
+MONGO_URI=mongodb://localhost:27017/rawflip
+JWT_SECRET=<min-32-chars>
+JWT_REFRESH_SECRET=<different-min-32-chars>
+TOTP_ENCRYPTION_KEY=<min-32-chars>
+PORT=5000
+NODE_ENV=development
+CLIENT_ORIGIN=https://rawflip.shop
+APP_URL=https://rawflip-backend.onrender.com
+NGN_USD_RATE=1600
+MIN_DEPOSIT=5000
+MIN_WITHDRAWAL=5000
+
+RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxx              # from resend.com dashboard
+#SMTP_USER=your_gmail@gmail.com
+#SMTP_PASS=your_gmail_app_password
+
+GOOGLE_CLIENT_ID=xxx
+GOOGLE_CLIENT_SECRET=xxx
+GOOGLE_CALLBACK_URL=http://localhost:5000/api/auth/google/callback
+
+ELASTIC_NODE=http://localhost:9200
+ELASTIC_API_KEY=
+
+TELEGRAM_BOT_TOKEN=your-bot-token
+TELEGRAM_ADMIN_CHAT_ID=your-admin-chat-id
+
+BANK_NAME=RawFlip Payments Ltd
+BANK_ACCOUNT=0000000000
+BANK_ACCOUNT_NAME=RawFlip Escrow
+
+# Support — added v20
+# The support email address is protected in source code.
+# It is built at runtime from character array — do not add it here.
+==========================================================
+
+Additional npm install:
+npm install node-telegram-bot-api
+==========================================================
+*/
