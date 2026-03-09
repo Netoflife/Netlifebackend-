@@ -4487,16 +4487,28 @@ router.delete('/push-subscription', auth, asyncH(async (req, res) => {
   res.json({ ok: true });
 }));
 
-router.post('/kyc/submit', auth, asyncH(async (req, res) => {
+const uploadKYC = multer({ storage, limits:{ fileSize:10*1024*1024, files:2 }, fileFilter:(_,file,cb) => /^image\/(jpeg|png|webp)$/.test(file.mimetype)?cb(null,true):cb(new Error('Images only (JPEG, PNG, WEBP)')) });
+
+router.post('/kyc/submit', auth, uploadKYC.fields([{name:'idDoc',maxCount:1},{name:'selfie',maxCount:1}]), asyncH(async (req, res) => {
   const user = await User.findById(req.user._id);
   if (user.kycStatus === 'approved')
     return res.status(400).json({ error:'KYC already approved.' });
   if (user.kycStatus === 'pending')
     return res.status(400).json({ error:'KYC submission already under review.' });
 
-  const { fullName, dob, idType, idNumber, idDocUrl, selfieUrl, address } = req.body;
-  if (!fullName || !dob || !idType || !idNumber || !idDocUrl || !selfieUrl || !address)
-    return res.status(400).json({ error:'All KYC fields are required.' });
+  const { fullName, dob, idType, idNumber, address } = req.body;
+  const idDocFile  = req.files && req.files['idDoc']  && req.files['idDoc'][0];
+  const selfieFile = req.files && req.files['selfie'] && req.files['selfie'][0];
+
+  if (!fullName || !dob || !idType || !idNumber || !address)
+    return res.status(400).json({ error:'All personal details are required.' });
+  if (!idDocFile)
+    return res.status(400).json({ error:'Please upload a photo of your ID document.' });
+  if (!selfieFile)
+    return res.status(400).json({ error:'Please upload a selfie holding your ID.' });
+
+  const idDocUrl  = `/uploads/${idDocFile.filename}`;
+  const selfieUrl = `/uploads/${selfieFile.filename}`;
 
   await KycDoc.findOneAndUpdate(
     { user: user._id },
