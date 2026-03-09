@@ -1,34 +1,8 @@
 'use strict';
-/**
- * RawFlip Marketplace — Backend v8
- * Upgrades over v6:
- *   - Dynamic block-fee engine (₦100 per ₦5,000 block)
- *   - Subscription system: Free / Basic (₦1,500/mo) / Pro (₦4,500/mo)
- *   - Referral program with milestones, atomic rewards, abuse protection
- *   - Telegram bot integration for proof submission & admin approval
- *   - Wallet deposit/withdraw with admin approval workflow
- *   - Transaction lifecycle: pending→proof_submitted→approved→completed
- *   - All financial ops atomic via MongoDB sessions
- *
- * npm install (additions over v6):
- *   node-telegram-bot-api
- *   web-push
- *   @resend/node
- *
- * New / updated .env:
- *   RESEND_API_KEY=re_xxxxxxxxxxxx       (from resend.com dashboard)
- *   VAPID_PUBLIC_KEY=<run: npx web-push generate-vapid-keys>
- *   VAPID_PRIVATE_KEY=<run: npx web-push generate-vapid-keys>
- *   VAPID_EMAIL=mailto:notifications@send.rawflip.shop
- *   TELEGRAM_BOT_TOKEN=<your-bot-token>
- *   TELEGRAM_ADMIN_CHAT_ID=<admin-chat-id>
- *   MIN_DEPOSIT=5000
- *   MIN_WITHDRAWAL=5000
- */
+
 require('dotenv').config();
 
-const express      = require('express')
-const router = express.Router();;
+const express      = require('express');
 const mongoose     = require('mongoose');
 const bcrypt       = require('bcryptjs');
 const jwt          = require('jsonwebtoken');
@@ -52,7 +26,6 @@ const QRCode       = require('qrcode');
 const passport     = require('passport');
 const { Strategy: GoogleStrategy } = require('passport-google-oauth20');
 
-// ── Env validation ─────────────────────────────────────────────────────────────
 ['JWT_SECRET','JWT_REFRESH_SECRET','TOTP_ENCRYPTION_KEY'].forEach(k => {
   if (!process.env[k] || process.env[k].length < 32)
     { console.error(`FATAL: ${k} missing or < 32 chars`); process.exit(1); }
@@ -62,20 +35,14 @@ const PORT               = parseInt(process.env.PORT)  || 5000;
 const MONGO_URI          = process.env.MONGO_URI       || 'mongodb://localhost:27017/rawflip';
 const JWT_SECRET         = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+const CLIENT_ORIGIN      = process.env.CLIENT_ORIGIN   || 'https://rawflip.netlify.app';
+const APP_URL            = process.env.APP_URL          || 'http://localhost:5000';
 const IS_PROD            = process.env.NODE_ENV         === 'production';
-const CLIENT_ORIGIN      = process.env.CLIENT_ORIGIN   || 'https://rawflip.shop';
-// APP_URL is the publicly reachable base URL of this backend server.
-// In production it must be set in .env (e.g. https://rawflip-backend.onrender.com).
-// If not set, fall back to CLIENT_ORIGIN in prod so email links are never broken,
-// or localhost:5000 in development.
-const APP_URL            = process.env.APP_URL
-  || (IS_PROD ? CLIENT_ORIGIN : 'http://localhost:5000');
 const VAPID_PUBLIC_KEY   = process.env.VAPID_PUBLIC_KEY  || '';
 const VAPID_PRIVATE_KEY  = process.env.VAPID_PRIVATE_KEY || '';
 const VAPID_EMAIL        = process.env.VAPID_EMAIL       || 'mailto:admin@rawflip.com';
 const UPLOADS_DIR        = path.join(__dirname, 'uploads');
 
-// ── Web Push VAPID Setup ──────────────────────────────────
 if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
   webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
   console.log('[Push] VAPID configured ✓');
@@ -89,15 +56,11 @@ const TOTP_ENC_KEY = crypto.pbkdf2Sync(
   process.env.TOTP_ENCRYPTION_KEY, 'rawflip-aes-salt', 100000, 32, 'sha256'
 );
 
-// ── Wallet constants ───────────────────────────────────────────────────────────
 const MIN_DEPOSIT         = parseInt(process.env.MIN_DEPOSIT)    || 5000;
 const MIN_WITHDRAWAL      = parseInt(process.env.MIN_WITHDRAWAL)  || 5000;
 
-// ── Legal agreement version ───────────────────────────────────────────────────
-// Bump this string when Terms content changes to force all users to re-agree
 const CURRENT_TERMS_VERSION = process.env.TERMS_VERSION || '1.0';
 
-// ── Subscription plan definitions ─────────────────────────────────────────────
 const PLANS = {
   free: {
     id: 'free', name: 'Free', costNGN: 0,
@@ -116,33 +79,31 @@ const PLANS = {
   },
 };
 const PLAN_IDS = Object.keys(PLANS);
-const EARLY_ADOPTER_LIMIT       = 200;  // first N registered users get perks
-const EARLY_ADOPTER_PERK_MONTHS = 6;    // free-perk window in months
-
-// ── Legacy plans (Founding Members after 6-month free window) ─────────────────
-// 50% lifetime discount, exclusive to first 200 users
+const EARLY_ADOPTER_LIMIT = 200;
+const EARLY_ADOPTER_PERK_MONTHS = 6;
+const FOUNDING_MEMBER_LIMIT = 200;
+const FOUNDING_MEMBER_PERK_DAYS = 180;
+const LEGACY_PLAN_IDS = ['legacy_basic','legacy_pro'];
 const LEGACY_PLANS = {
   legacy_basic: {
-    id: 'legacy_basic', name: 'Legacy Basic', costNGN: 750,  // ₦1500 × 50%
-    escrowFeePercent: 12, listingLimit: 20, minWithdrawal: 1000,
-    features: ['Founding Member badge (forever)','12% escrow fee (50% off Basic)','Up to 20 listings','₦1,000 min withdrawal','✓ Verified badge','✓ Priority search','Legacy status ribbon'],
+    id:'legacy_basic', name:'Legacy Basic', costNGN:750,
+    escrowFeePercent:12, listingLimit:20, minWithdrawal:1000,
+    features:['Raw Industrial Badge','LIFETIME PRICE LOCK','12% Escrow Fee','20 Listings','₦1,000 Min Withdrawal'],
   },
   legacy_pro: {
-    id: 'legacy_pro', name: 'Legacy Pro', costNGN: 2250,    // ₦4500 × 50%
-    escrowFeePercent: 7.5, listingLimit: Infinity, minWithdrawal: 0,
-    features: ['Founding Member badge (forever)','7.5% escrow fee (50% off Pro)','Unlimited listings','No minimum withdrawal','✓ Pro analytics','✓ Highest search priority','✓ Referral boost','Legacy status ribbon'],
+    id:'legacy_pro', name:'Legacy Pro', costNGN:2250,
+    escrowFeePercent:7.5, listingLimit:Infinity, minWithdrawal:0,
+    features:['Raw Industrial Badge (Legacy)','LIFETIME PRICE LOCK','7.5% Escrow Fee','Unlimited Listings','₦0 Min Withdrawal'],
   },
 };
-const ALL_PLAN_IDS = [...Object.keys(PLANS), ...Object.keys(LEGACY_PLANS)];
 
-// ── Referral reward constants ─────────────────────────────────────────────────
 const REFERRAL_REWARDS = {
   referrer_email_verify:              500,
   referrer_first_purchase:            500,
   referee_welcome:                    500,
-  referee_first_purchase_discount:    0.05, // 5% escrow discount
-  subscription_commission:            0.08, // 8% base commission (Free/Basic referrers)
-  subscription_commission_pro:        0.12, // 12% boosted commission (Pro referrers)
+  referee_first_purchase_discount:    0.05,
+  subscription_commission:            0.08,
+  subscription_commission_pro:        0.12,
 };
 const REFERRAL_MILESTONES = [
   { count: 3,  reward_type: 'plan',    plan: 'basic', duration_days: 30 },
@@ -152,26 +113,16 @@ const REFERRAL_MILESTONES = [
 
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-// ── Currency config ────────────────────────────────────────────────────────────
 const currencyConfig = { rate: parseFloat(process.env.NGN_USD_RATE) || 1600 };
 const convertNGNtoUSD = (ngn) => +(ngn / currencyConfig.rate).toFixed(2);
 const convertUSDtoNGN = (usd) => Math.round(usd * currencyConfig.rate);
 const fmtNGN = (ngn) => `₦${Number(ngn||0).toLocaleString('en-NG')} ($${convertNGNtoUSD(ngn||0).toFixed(2)})`;
 
-// ══ FEE ENGINE ════════════════════════════════════════════════════════════════
-/**
- * Block fee: ₦100 per ₦5,000 block
- * fee = ceil(amount / 5000) * 100
- * Examples: 5000→100, 5001→200, 10000→200
- */
-// calcBlockFee: returns 0 for active Founding Members (EA within 6-month window)
-function calcBlockFee(amount, user) {
+function calcBlockFee(amount) {
   if (!amount || amount <= 0) return 0;
-  if (user && isEarlyAdopterActive(user)) return 0;  // Founding Member perk: zero fees
   return Math.ceil(amount / 5000) * 100;
 }
 
-// ── AES helpers ────────────────────────────────────────────────────────────────
 function aesEncrypt(text) {
   const iv = crypto.randomBytes(16);
   const c  = crypto.createCipheriv('aes-256-cbc', TOTP_ENC_KEY, iv);
@@ -183,7 +134,6 @@ function aesDecrypt(enc) {
   return d.update(data,'hex','utf8') + d.final('utf8');
 }
 
-// ── i18n ──────────────────────────────────────────────────────────────────────
 const en = {
   'auth.register.success':  'Welcome to RawFlip! Please verify your email.',
   'auth.login.invalid':     'Invalid credentials.',
@@ -198,7 +148,6 @@ const en = {
 };
 const t = k => en[k] || k;
 
-// ── Transaction state machine ──────────────────────────────────────────────────
 const TX_STATES = {
   PENDING_OFFER:     'PENDING_OFFER',
   ACCEPTED:          'ACCEPTED',
@@ -212,7 +161,6 @@ const TX_STATES = {
   REFUNDED:          'REFUNDED',
 };
 
-// Wallet transaction states (deposit/withdraw lifecycle)
 const WALLET_TX_STATES = {
   PENDING:          'pending',
   PROOF_SUBMITTED:  'proof_submitted',
@@ -221,7 +169,6 @@ const WALLET_TX_STATES = {
   COMPLETED:        'completed',
 };
 
-// Valid wallet tx state transitions
 const WALLET_TX_TRANSITIONS = {
   pending:          ['proof_submitted', 'rejected'],
   proof_submitted:  ['approved', 'rejected'],
@@ -251,7 +198,6 @@ function canTransition(from, to) {
   return (TX_TRANSITIONS[from] || []).includes(to);
 }
 
-// ── Email templates ─────────────────────────────────────────────────────────────
 const emailBase = (body) => `<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>
   body{font-family:'DM Sans',Arial,sans-serif;background:#0a0a0f;color:#eeeef8;margin:0;padding:0}
   .wrap{max-width:560px;margin:32px auto;background:#111118;border-radius:12px;border:1px solid #252535;overflow:hidden}
@@ -275,25 +221,13 @@ const emailTemplates = {
 
   verifyEmail: (u,code) => ({ subject:'Your RawFlip verification code', html: emailBase(`
     <h2>Verify Your Email</h2>
-    <p>Hi <strong>${u}</strong>, enter this code on the RawFlip verification screen to activate your account:</p>
-    <div style='text-align:center;margin:28px 0'>
-      <div style='display:inline-block;background:#f4f6ff;border:2px solid #c7d0ff;border-radius:14px;padding:18px 36px'>
-        <span style='font-size:2.4rem;font-weight:800;letter-spacing:.25em;color:#3a3aff;font-family:monospace'>${code}</span>
+    <p>Hi <strong>${u}</strong>, your verification code is:</p>
+    <div style='text-align:center;margin:24px 0'>
+      <div style='display:inline-block;background:#f4f6ff;border:2px solid #c7d0ff;border-radius:14px;padding:16px 32px'>
+        <span style='font-size:2.2rem;font-weight:800;letter-spacing:.25em;color:#3a3aff;font-family:monospace'>${code}</span>
       </div>
     </div>
-    <p style='text-align:center;font-size:.88rem;color:#4a4a6a'>⏱ Code expires in <strong>30 minutes</strong>. Do not share it with anyone.</p>
-    <p style='text-align:center;font-size:.8rem;color:#8888aa'>If you didn't create a RawFlip account you can safely ignore this email.</p>`) }),
-
-  resetPassword: (u,code) => ({ subject:'Your RawFlip password reset code', html: emailBase(`
-    <h2>Password Reset</h2>
-    <p>Hi <strong>${u}</strong>, enter this code on the RawFlip password reset screen:</p>
-    <div style='text-align:center;margin:28px 0'>
-      <div style='display:inline-block;background:#fff4f4;border:2px solid #ffc7c7;border-radius:14px;padding:18px 36px'>
-        <span style='font-size:2.4rem;font-weight:800;letter-spacing:.25em;color:#cc2200;font-family:monospace'>${code}</span>
-      </div>
-    </div>
-    <p style='text-align:center;font-size:.88rem;color:#4a4a6a'>⏱ Code expires in <strong>30 minutes</strong>. Do not share it with anyone.</p>
-    <p style='text-align:center;font-size:.8rem;color:#8888aa'>If you didn't request a password reset you can safely ignore this email.</p>`) }),
+    <p style='text-align:center;font-size:.88rem;color:#4a4a6a'>⏱ Expires in <strong>30 minutes</strong>. Do not share this code.</p>`) }),
 
   depositApproved: (u, amt, fee) => ({ subject:'Deposit Approved ✅', html: emailBase(`
     <h2>Deposit Approved!</h2>
@@ -394,56 +328,52 @@ const emailTemplates = {
     <a href="${CLIENT_ORIGIN}" class="btn">View Dispute</a>`) }),
 
   disputeResolved: (u, tx, decision) => ({ subject:'Dispute Resolved', html: emailBase(`
-    <h2>Dispute Resolved</h2><p>Hi ${u}, decision: <strong>${decision==='release'?'Payment released to seller':'Refund to buyer'}</strong>.</p>`) }),
+    <h2>Dispute Resolved</h2><p>Hi \${u}, decision: <strong>\${decision==='release'?'Payment released to seller':'Refund to buyer'}</strong>.</p>`) }),
 
-  foundingMember: (u, eaNumber) => ({ subject:'🔓 You\'re in! Welcome to the RawFlip Inner Circle (1 of 200)', html: emailBase(`
-    <h2>Welcome to the flip side, ${u}!</h2>
-    <p>We're thrilled to have you as one of the first 200 members of RawFlip Marketplace. Because you're joining us at the very beginning, we've upgraded your account to <strong>Founding Member</strong> status — completely on the house.</p>
-    <div class="meta">
-      <p><strong>🚫 Zero Fees:</strong> Keep 100% of what you sell.</p>
-      <p><strong>♾️ Infinite Listings:</strong> Post as much as you want, no limits.</p>
-      <p><strong>🚀 Premium Visibility:</strong> Your items get "First-Look" placement in the feed.</p>
-      <p><strong>🎯 Direct Access:</strong> Your feedback will literally help us build the future of this app.</p>
+  foundingMemberWelcome: (u, rank) => ({ subject:'⚒️ Welcome, Founding Member #' + rank + '! Access Granted.', html: emailBase(`
+    <div style="text-align:center;padding:24px 0">
+      <div style="display:inline-block;background:linear-gradient(135deg,#2b2b2b,#4a4a4a,#1a1a1a);border:2px solid #f0ad4e;border-radius:16px;padding:28px 40px;box-shadow:0 8px 32px rgba(240,173,78,.25),inset 0 1px 0 rgba(255,255,255,.1)">
+        <div style="font-size:2rem;margin-bottom:8px">⚒️</div>
+        <div style="font-size:.7rem;letter-spacing:.25em;color:#f0ad4e;text-transform:uppercase;font-weight:700">Raw Industrial</div>
+        <div style="font-size:1.4rem;font-weight:900;color:#eeeef8;margin:4px 0">Founding Member</div>
+        <div style="font-size:.8rem;color:#aaaacc">#\${rank} of 200</div>
+      </div>
     </div>
-    <p>You have full, unrestricted access to every premium feature for the next <strong>6 months</strong>. No strings attached — just our way of saying thanks for helping us get RawFlip off the ground.</p>
-    <p style="font-size:.82rem;color:#8888aa">You are Founding Member <strong style="color:#f0ad4e">No. ${eaNumber} of 200</strong>.</p>
-    <a href="${CLIENT_ORIGIN}" class="btn">Open RawFlip &amp; Start Selling</a>
-    <p style="margin-top:20px;font-size:.8rem;color:#4a4a6a">P.S. Since you're one of the original 200, keep an eye on your profile for a special "Founding Member" badge — it's already there! 🏆</p>
-    <p style="font-size:.85rem;color:#8888aa">Cheers,<br/>The RawFlip Team</p>`) }),
+    <h2 style="text-align:center">ACCESS GRANTED ⚡</h2>
+    <p>Congratulations <strong>\${u}</strong> — you are Founding Member <strong>#\${rank}</strong> of RawFlip Marketplace.</p>
+    <div class="meta">
+      <p><strong>🎁 Your 180-Day Founding Member Perks:</strong></p>
+      <p>✅ 100% Zero Fees — Deposit, Withdrawal &amp; Escrow</p>
+      <p>✅ Unlimited Pro Access</p>
+      <p>✅ Raw Industrial Badge on your profile</p>
+      <p>✅ Priority Support — all your tickets are flagged VIP</p>
+      <p>✅ Lifetime access to Legacy pricing after 180 days</p>
+    </div>
+    <p style="font-size:.85rem;color:#8888aa">After 180 days, lock in your Legacy rate — Legacy Basic (₦750/mo) or Legacy Pro (₦2,250/mo) — at LIFETIME PRICE LOCK. We'll remind you 14 days before.</p>
+    <a href="\${CLIENT_ORIGIN}" class="btn">Enter the Marketplace</a>`) }),
 
-  // ── Founding Member legacy transition reminder emails ─────────────────────
-  foundingMember14Day: (u) => ({ subject:'⚒️ Your Founding Member benefits are evolving...', html: emailBase(`
-    <h2>Hi ${u}, time flies!</h2>
-    <p>It's been nearly six months since you joined RawFlip as one of our first 200 members.</p>
-    <p>Your initial 6-month <strong>"Founding Member"</strong> period ends in <strong style="color:#f0ad4e">14 days</strong>.</p>
-    <p>Because you are an original, we are granting you <strong>Legacy Status</strong>. This means:</p>
+  foundingMember14DayAlert: (u, rank, expiresAt) => ({ subject:'⚠️ Your Founding Member benefits are evolving — 14 days left', html: emailBase(`
+    <h2>Time to Lock In Your Legacy Rate ⚒️</h2>
+    <p>Hi <strong>\${u}</strong> (Founding Member #\${rank}),</p>
+    <p>Your 180-day zero-fee Founding Member period ends on <strong>\${new Date(expiresAt).toLocaleDateString('en-NG')}</strong>.</p>
     <div class="meta">
-      <p>🏆 Your <strong>"Raw Industrial" badge stays forever</strong></p>
-      <p>💰 You get a <strong>lifetime 50% discount</strong> on Pro or Basic plans</p>
-      <p>📌 Legacy Basic: <strong>₦750/month</strong> · 12% escrow · 20 listings</p>
-      <p>🚀 Legacy Pro: <strong>₦2,250/month</strong> · 7.5% escrow · Unlimited listings</p>
+      <p><strong>Your exclusive Legacy options (LIFETIME PRICE LOCK):</strong></p>
+      <p>🔒 <strong>Legacy Basic</strong> — ₦750/mo | 12% Escrow | 20 Listings | ₦1,000 Min Withdrawal</p>
+      <p>🔒 <strong>Legacy Pro</strong> — ₦2,250/mo | 7.5% Escrow | Unlimited Listings | ₦0 Min Withdrawal</p>
     </div>
-    <p>Lock in your Legacy rate before your free window closes.</p>
-    <a href="${CLIENT_ORIGIN}" class="btn" onclick="nav('subscription')">Secure My Legacy Rate</a>
-    <p style="font-size:.8rem;color:#4a4a6a;margin-top:16px">The RawFlip Team</p>`) }),
+    <p>These rates are exclusive to the first 200 and will never be available again. Don't miss the lock-in window.</p>
+    <a href="\${CLIENT_ORIGIN}" class="btn">Lock In My Legacy Rate</a>`) }),
 
-  foundingMember7Day: (u) => ({ subject:'⏳ Final Week: Claim your Legacy Status on RawFlip', html: emailBase(`
-    <h2>Hi ${u}, one week left!</h2>
-    <p>Your 6 months of <strong>100% free premium access</strong> expires in just <strong style="color:#ff4e1f">7 days</strong>.</p>
-    <p>Don't let your 0% escrow fee disappear! Lock in your permanent <strong>Legacy discount</strong> now to keep the best rates on the marketplace.</p>
+  foundingMember7DayAlert: (u, rank, expiresAt) => ({ subject:'🚨 Final Week — Lock In Your Founding Member Legacy Rate', html: emailBase(`
+    <h2>Final 7 Days — Don't Lose Your Rate 🚨</h2>
+    <p>Hi <strong>\${u}</strong> (Founding Member #\${rank}),</p>
+    <p>Your zero-fee access expires on <strong>\${new Date(expiresAt).toLocaleDateString('en-NG')}</strong>. After that, without a Legacy plan, fees revert to standard rates.</p>
     <div class="meta">
-      <p>📌 Legacy Basic: <strong>₦750/month</strong> · 12% escrow · 20 listings</p>
-      <p>🚀 Legacy Pro: <strong>₦2,250/month</strong> · 7.5% escrow · Unlimited listings</p>
+      <p>🔒 <strong>Legacy Basic</strong> — ₦750/mo (was ₦1,500) | PRICE LOCKED FOR LIFE</p>
+      <p>🔒 <strong>Legacy Pro</strong> — ₦2,250/mo (was ₦4,500) | PRICE LOCKED FOR LIFE</p>
     </div>
-    <p>Both plans include your <strong>Raw Industrial badge forever</strong> and a legacy ribbon on your profile.</p>
-    <a href="${CLIENT_ORIGIN}" class="btn">View My Legacy Offer</a>
-    <p style="font-size:.8rem;color:#4a4a6a;margin-top:16px">The RawFlip Team</p>`) }),
+    <a href="\${CLIENT_ORIGIN}" class="btn" style="background:#e53e3e">Claim My Legacy Rate Now</a>`) }),
 };
-
-// ── Email service (Resend SDK) ────────────────────────────────────────────────
-// Env vars: RESEND_API_KEY=re_xxxxxxxxxxxx
-// Verified sending domain: send.rawflip.shop
-// From address: RawFlip <notifications@send.rawflip.shop>
 
 const FROM_EMAIL = 'RawFlip <notifications@send.rawflip.shop>';
 
@@ -478,48 +408,44 @@ async function sendEmail(to, { subject, html }) {
   }
 }
 
-
-// ── App / Socket ───────────────────────────────────────────────────────────────
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
-  cors:{ origin: true, credentials:true, methods:['GET','POST'] }, // auth via JWT, not CORS blocking
+  cors:{ origin: true, credentials:true, methods:['GET','POST'] },
   pingTimeout:20000, pingInterval:25000, transports:['websocket','polling'],
 });
 
-// ── Middleware ─────────────────────────────────────────────────────────────────
 app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy:{ policy:'cross-origin' }, referrerPolicy:{ policy:'strict-origin-when-cross-origin' } }));
 const ALLOWED_ORIGINS = new Set([
   CLIENT_ORIGIN,
   APP_URL,
-  // Allow same-origin (when FE is served from same Express server)
+
   process.env.APP_URL || '',
 ].filter(Boolean));
 
 const corsOpts = {
   origin(origin, cb) {
-    // No origin = same-origin request, server-to-server, or mobile app — allow
+
     if (!origin) return cb(null, true);
-    // In dev, allow everything
+
     if (!IS_PROD) return cb(null, true);
-    // In prod, allow any origin that matches our known origins
+
     if (ALLOWED_ORIGINS.has(origin)) return cb(null, true);
-    // Also allow if origin matches the request host (covers any deployment URL)
-    cb(null, true); // Permissive: trust auth via HttpOnly cookie + JWT instead of CORS blocking
+
+    cb(null, true);
   },
   credentials: true,
   methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','X-CSRF-Token'],
 };
-// cors() middleware handles OPTIONS preflight automatically (preflightContinue defaults to false).
-// No app.options() wildcard needed — that pattern crashes Express 5 + path-to-regexp v8.
+
 app.use(cors(corsOpts));
 app.use(express.json({ limit:'4mb' }));
 app.use(cookieParser());
 app.use(morgan(IS_PROD?'combined':'dev'));
 app.use('/uploads', (req, res, next) => {
-  // Force download disposition to prevent browser execution of uploaded files
+
   res.setHeader('Content-Disposition', 'attachment');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   next();
@@ -534,7 +460,6 @@ app.use('/api/auth',   authLimiter);
 app.use('/api/search', searchLimiter);
 app.use('/api',        apiLimiter);
 
-// ── Multer ─────────────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
   destination:(_,__,cb) => cb(null,UPLOADS_DIR),
   filename:   (_,file,cb) => cb(null,`${uuid()}${path.extname(file.originalname).toLowerCase()}`),
@@ -542,13 +467,11 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits:{ fileSize:8*1024*1024, files:8 }, fileFilter:(_,file,cb) => /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)?cb(null,true):cb(new Error('Images only')) });
 const uploadEvidence = multer({ storage, limits:{ fileSize:10*1024*1024, files:5 }, fileFilter:(_,file,cb) => /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)?cb(null,true):cb(new Error('Images only')) });
 const uploadProof = multer({ storage, limits:{ fileSize:10*1024*1024, files:3 }, fileFilter:(_,file,cb) => /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)?cb(null,true):cb(new Error('Images only')) });
-// Support ticket attachment — images + PDF, single file, 5 MB
+
 const uploadSupport = multer({ storage, limits:{ fileSize:5*1024*1024, files:1 }, fileFilter:(_,file,cb) => {
   const ok = /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype) || file.mimetype === 'application/pdf';
   cb(ok ? null : new Error('Images or PDF only'), ok);
 } });
-
-// ══ SCHEMAS ═══════════════════════════════════════════════════════════════════
 
 const userSchema = new mongoose.Schema({
   username:         { type:String, required:true, unique:true, trim:true, minlength:3, maxlength:30 },
@@ -570,7 +493,6 @@ const userSchema = new mongoose.Schema({
   refreshTokens:    { type:[String], default:[], select:false },
   emailVerifyToken: { type:String, default:null, select:false },
   emailVerifyExpires:{ type:Date, default:null, select:false },
-  // Short alphanumeric codes (verification & password-reset)
   verifyCode:        { type:String, default:null, select:false },
   verifyCodeExpires: { type:Date,   default:null, select:false },
   verifyCodeSentAt:  { type:Date,   default:null, select:false },
@@ -581,23 +503,22 @@ const userSchema = new mongoose.Schema({
   twoFASecret:      { type:String, default:null, select:false },
   twoFABackupCodes: { type:[String], default:[], select:false },
   googleId:         { type:String, default:null, select:false },
-  // 4-bucket wallet (NGN)
+
   availableBalance:   { type:Number, default:0, min:0 },
   reservedBalance:    { type:Number, default:0, min:0 },
   escrowBalance:      { type:Number, default:0, min:0 },
   withdrawableBalance:{ type:Number, default:0, min:0 },
-  depositBalance:     { type:Number, default:0, min:0 },   // legacy
-  earningsBalance:    { type:Number, default:0, min:0 },   // referral/bonus earnings
-  // Subscription
-  activePlan:       { type:String, enum:ALL_PLAN_IDS, default:'free' },
-  legacyPlan:       { type:String, enum:['none','legacy_basic','legacy_pro'], default:'none' }, // set once EA transitions to paid legacy
+  depositBalance:     { type:Number, default:0, min:0 },
+  earningsBalance:    { type:Number, default:0, min:0 },
+
+  activePlan:       { type:String, enum:[...PLAN_IDS,...LEGACY_PLAN_IDS], default:'free' },
   planExpiresAt:    { type:Date, default:null },
-  // Referral
+
   referralCode:     { type:String, unique:true, sparse:true },
   referredBy:       { type:mongoose.Schema.Types.ObjectId, ref:'User', default:null },
   referralCount:    { type:Number, default:0 },
   referralEarnings: { type:Number, default:0 },
-  // Meta
+
   followers:        [{ type:mongoose.Schema.Types.ObjectId, ref:'User' }],
   following:        [{ type:mongoose.Schema.Types.ObjectId, ref:'User' }],
   blockedUsers:     [{ type:mongoose.Schema.Types.ObjectId, ref:'User', select:false }],
@@ -611,23 +532,23 @@ const userSchema = new mongoose.Schema({
     ip:String, device:String, fingerprint:String, location:String,
     time:{ type:Date, default:Date.now }, _id:false,
   }],
-  // Abuse protection
+
   registrationIp:   { type:String, default:'' },
   flaggedForAbuse:  { type:Boolean, default:false },
   firstPurchaseDone:{ type:Boolean, default:false },
-  // Early adopter / Founding Member programme
+
   isEarlyAdopter:           { type:Boolean, default:false },
   earlyAdopterNumber:       { type:Number,  default:null  },
   earlyAdopterGrantedAt:    { type:Date,    default:null  },
-  eaReminder14Sent:         { type:Boolean, default:false },
-  eaReminder7Sent:          { type:Boolean, default:false },
-  // KYC
+  foundingMember14DaySent:  { type:Boolean, default:false },
+  foundingMember7DaySent:   { type:Boolean, default:false },
+
   kycStatus:        { type:String, enum:['none','pending','approved','rejected'], default:'none' },
   kycSubmittedAt:   { type:Date,   default:null },
   kycReviewedAt:    { type:Date,   default:null },
   kycReviewedBy:    { type:mongoose.Schema.Types.ObjectId, ref:'User', default:null },
   kycRejectionNote: { type:String, default:'' },
-  // Legal agreements
+
   privacy_policy_agreed:    { type:Boolean, default:false },
   privacy_policy_agreed_at: { type:Date,    default:null  },
   terms_agreed:             { type:Boolean, default:false },
@@ -644,59 +565,52 @@ userSchema.pre('save', async function() {
 userSchema.methods.comparePassword = function(pw) {
   return this.password ? bcrypt.compare(pw, this.password) : Promise.resolve(false);
 };
-// Generate referral code if missing
+
 userSchema.pre('save', async function() {
   if (!this.referralCode) {
-    // Retry loop to prevent collision on unique index
+
     const UserModel = mongoose.model('User');
     let code, attempts = 0;
     do {
       const prefix = this.username.replace(/[^a-zA-Z0-9]/g,'').toUpperCase().slice(0,4);
       code = prefix + crypto.randomBytes(3).toString('hex').toUpperCase();
       attempts++;
-      if (attempts > 10) break; // safety — extremely unlikely
+      if (attempts > 10) break;
     } while (await UserModel.exists({ referralCode: code }));
     this.referralCode = code;
   }
 });
 
-// ── Subscription schema ────────────────────────────────────────────────────────
 const subscriptionSchema = new mongoose.Schema({
   userId:       { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, index:true },
-  plan:         { type:String, enum:PLAN_IDS, required:true },
+  plan:         { type:String, enum:[...PLAN_IDS,...LEGACY_PLAN_IDS], required:true },
   costNGN:      { type:Number, required:true },
   startDate:    { type:Date, required:true },
   endDate:      { type:Date, required:true },
   status:       { type:String, enum:['active','expired','cancelled','gifted'], default:'active' },
-  giftedBy:     { type:String, default:'' },  // 'referral_milestone', 'admin', etc.
+  giftedBy:     { type:String, default:'' },
   walletTxId:   { type:mongoose.Schema.Types.ObjectId, ref:'WalletTx', default:null },
   expiryReminderSent: { type:Boolean, default:false },
 }, { timestamps:true });
 
-// ── Referral schema ────────────────────────────────────────────────────────────
 const referralSchema = new mongoose.Schema({
   referrerId:   { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, index:true },
   refereeId:    { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, unique:true },
-  // Reward flags (prevent duplicates)
+
   emailVerifyRewardPaid:  { type:Boolean, default:false },
   firstPurchaseRewardPaid:{ type:Boolean, default:false },
-  // Milestones already claimed (e.g. {3: true, 5: true})
+
   milestonesClaimed:      { type:mongoose.Schema.Types.Mixed, default:{} },
-  // Lock rewards if purchase refunded
+
   locked:       { type:Boolean, default:false },
   lockedReason: { type:String, default:'' },
-  // Abuse detection metadata
-  refereeIp:        { type:String, default:'' },
-  refereeDevice:    { type:String, default:'' },   // fingerprint of referee at registration
-  referrerDevice:   { type:String, default:'' },   // referrer's most-recent login fingerprint
-  suspicious:       { type:Boolean, default:false },
-  suspiciousReason: { type:String,  default:'' },
+
+  refereeIp:    { type:String, default:'' },
+  refereeDevice:{ type:String, default:'' },
 }, { timestamps:true });
 
 referralSchema.index({ referrerId:1, refereeId:1 });
-referralSchema.index({ referrerId:1, createdAt:1 }); // velocity queries
 
-// ── Listing schema ─────────────────────────────────────────────────────────────
 const listingSchema = new mongoose.Schema({
   seller:       { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, index:true },
   title:        { type:String, required:true, trim:true, minlength:3, maxlength:150 },
@@ -715,15 +629,14 @@ const listingSchema = new mongoose.Schema({
   shipping:     { type:Boolean, default:false },
   shippingCost: { type:Number, default:0, min:0 },
   shippingLabel:{ type:mongoose.Schema.Types.Mixed, default:null },
-  // Optional seller contact phone — shown to buyer after confirmed purchase
+
   contactPhone: { type:String, default:'', maxlength:30, trim:true },
-  // Search boost based on seller plan
+
   searchPriority: { type:Number, default:0, index:true },
 }, { timestamps:true });
 listingSchema.index({ title:'text', description:'text', tags:'text' });
 listingSchema.index({ category:1, status:1, searchPriority:-1, createdAt:-1 });
 
-// ── Transaction (escrow) schema ────────────────────────────────────────────────
 const transactionSchema = new mongoose.Schema({
   buyerId:      { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, index:true },
   sellerId:     { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, index:true },
@@ -733,23 +646,23 @@ const transactionSchema = new mongoose.Schema({
   amount:       { type:Number, required:true, min:1 },
   currency:     { type:String, default:'NGN' },
   escrowAmount: { type:Number, default:0 },
-  escrowFeePercent: { type:Number, default:20 },  // captured from seller's plan at tx time
+  escrowFeePercent: { type:Number, default:20 },
   escrowFeeAmount:  { type:Number, default:0 },
   exchangeRateUsed: { type:Number, default:0 },
   state:        { type:String, enum:Object.values(TX_STATES), default:TX_STATES.PENDING_OFFER, index:true },
-  // Dispatch fields — v10
+
   dispatchType:    { type:String, enum:['international','local',''], default:'' },
-  // International shipping
+
   trackingNumber:  { type:String, default:'' },
   shippingCarrier: { type:String, default:'' },
-  // Local shipping
+
   senderLocation:  { type:String, default:'' },
   transportType:   { type:String, enum:['bus','car','bike','van','truck',''], default:'' },
   sendTime:        { type:Date, default:null },
   estimatedArrival:{ type:Date, default:null },
   driverPhone:     { type:String, default:'' },
   productPictureUrl:{ type:String, default:'' },
-  // Shared
+
   dispatchNotes:   { type:String, default:'', maxlength:1000 },
   dispatchedAt:    { type:Date, default:null },
   autoReleaseAt:      { type:Date, default:null },
@@ -764,12 +677,12 @@ const transactionSchema = new mongoose.Schema({
   disputeId:      { type:mongoose.Schema.Types.ObjectId, ref:'Dispute', default:null },
   reviewUnlocked: { type:Boolean, default:false },
   adminNote:      { type:String, default:'' },
-  // Referral tracking (first purchase discount)
+
   refereeDiscount:{ type:Number, default:0 },
 }, { timestamps:true });
 transactionSchema.index({ buyerId:1, state:1 });
 transactionSchema.index({ sellerId:1, state:1 });
-transactionSchema.index({ state:1, createdAt:-1 }); // admin queries by state
+transactionSchema.index({ state:1, createdAt:-1 });
 
 transactionSchema.pre('save', function() {
   if (this.isModified('state') && !this.isNew) {
@@ -781,7 +694,6 @@ transactionSchema.pre('save', function() {
   this.__previousState = this.state;
 });
 
-// ── Offer schema ───────────────────────────────────────────────────────────────
 const offerSchema = new mongoose.Schema({
   listing:        { type:mongoose.Schema.Types.ObjectId, ref:'Listing', required:true, index:true },
   buyer:          { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true },
@@ -800,7 +712,6 @@ const offerSchema = new mongoose.Schema({
 offerSchema.index({ buyer:1, listing:1 });
 offerSchema.index({ seller:1, status:1 });
 
-// ── Dispute schema ─────────────────────────────────────────────────────────────
 const disputeSchema = new mongoose.Schema({
   transactionId: { type:mongoose.Schema.Types.ObjectId, ref:'Transaction', required:true, index:true },
   buyerId:       { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true },
@@ -823,8 +734,6 @@ const disputeSchema = new mongoose.Schema({
   responseDeadlineAt:{ type:Date, default:()=>new Date(Date.now()+3*86400000) },
 }, { timestamps:true });
 
-// ── Wallet transaction log ─────────────────────────────────────────────────────
-// Extended: supports deposit/withdrawal lifecycle with admin approval
 const walletTxSchema = new mongoose.Schema({
   user:          { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, index:true },
   type:          { type:String, enum:['deposit','withdrawal','reserve','unreserve','escrow_fund','escrow_release','escrow_refund','earning','refund','adjustment','subscription','referral_bonus','gift_subscription','subscription_commission'], required:true },
@@ -832,24 +741,24 @@ const walletTxSchema = new mongoose.Schema({
   toBucket:      { type:String, enum:['available','reserved','escrow','withdrawable','earnings','external'], default:'external' },
   amount:        { type:Number, required:true },
   fee:           { type:Number, default:0 },
-  netAmount:     { type:Number, default:0 },  // amount - fee
+  netAmount:     { type:Number, default:0 },
   currency:      { type:String, default:'NGN' },
-  // Approval lifecycle (for deposits/withdrawals)
+
   status:        { type:String, enum:Object.values(WALLET_TX_STATES), default:'completed' },
-  // Payment proof (for deposits via bank transfer)
+
   proofImageUrl: { type:String, default:null },
-  telegramFileId:{ type:String, default:null },  // Telegram file ID for proof
-  // Admin action
+  telegramFileId:{ type:String, default:null },
+
   approvedBy:    { type:mongoose.Schema.Types.ObjectId, ref:'User', default:null },
   approvedAt:    { type:Date, default:null },
   rejectedBy:    { type:mongoose.Schema.Types.ObjectId, ref:'User', default:null },
   rejectedAt:    { type:Date, default:null },
   rejectReason:  { type:String, default:'' },
-  // Admin action log (prevent double approval)
+
   adminActionAt: { type:Date, default:null },
-  // Payment details (for withdrawals)
+
   paymentDetails:{ type:mongoose.Schema.Types.Mixed, default:{} },
-  // Notes/ref
+
   note:          { type:String, default:'' },
   transactionId: { type:mongoose.Schema.Types.ObjectId, ref:'Transaction', default:null },
   botRef:        { type:String, default:null },
@@ -857,22 +766,20 @@ const walletTxSchema = new mongoose.Schema({
 }, { timestamps:true });
 walletTxSchema.index({ user:1, type:1, status:1 });
 walletTxSchema.index({ status:1, type:1, createdAt:-1 });
-walletTxSchema.index({ type:1, status:1, createdAt:-1 }); // admin pending filter
+walletTxSchema.index({ type:1, status:1, createdAt:-1 });
 
-// Enforce state transitions in pre-save
 walletTxSchema.pre('save', function() {
-  // Use cached previous state to avoid extra DB round-trip
+
   if (this.isModified('status') && !this.isNew) {
     const prevStatus = this._prevStatus;
     if (prevStatus && prevStatus !== this.status && !canWalletTransition(prevStatus, this.status)) {
       throw new Error(`Invalid wallet tx transition: ${prevStatus} → ${this.status}`);
     }
   }
-  // Cache current status for next save
+
   this._prevStatus = this.status;
 });
 
-// Cache status on load so pre-save can diff without a DB query
 walletTxSchema.post('init', function() {
   this._prevStatus = this.status;
 });
@@ -942,13 +849,6 @@ const configSchema = new mongoose.Schema({
   updatedBy: { type:mongoose.Schema.Types.ObjectId, ref:'User', default:null },
 }, { timestamps:true });
 
-// ── Atomic sequence counter — race-condition-free numbering ──────────────────
-const counterSchema = new mongoose.Schema({
-  _id: { type:String, required:true },   // counter name, e.g. 'userNumber'
-  seq: { type:Number, default:0 },
-});
-
-// Admin action log (audit trail)
 const adminLogSchema = new mongoose.Schema({
   adminId:    { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true },
   action:     { type:String, required:true },
@@ -959,8 +859,6 @@ const adminLogSchema = new mongoose.Schema({
   source:     { type:String, enum:['web','telegram','system'], default:'web' },
 }, { timestamps:true });
 
-// ── Model registration ─────────────────────────────────────────────────────────
-const Counter      = mongoose.model('Counter',      counterSchema);
 const Comment      = mongoose.model('Comment',      commentSchema);
 const AdminLog     = mongoose.model('AdminLog',     adminLogSchema);
 const User         = mongoose.model('User',         userSchema);
@@ -977,7 +875,6 @@ const Report       = mongoose.model('Report',       reportSchema);
 const Subscription = mongoose.model('Subscription', subscriptionSchema);
 const Referral     = mongoose.model('Referral',     referralSchema);
 
-// ── Core helpers ───────────────────────────────────────────────────────────────
 const validate = (req,res,next) => {
   const e = validationResult(req);
   if (!e.isEmpty()) return res.status(400).json({ errors:e.array().map(x=>({ field:x.path, message:x.msg })) });
@@ -1002,7 +899,6 @@ const auth = async (req,res,next) => {
 const adminOnly = (req,res,next) => req.user?.role==='admin' ? next() : res.status(403).json({ error:t('forbidden') });
 const asyncH = fn => (req,res,next) => Promise.resolve(fn(req,res,next)).catch(next);
 
-// Middleware: block wallet actions when any legal agreement is missing or terms are outdated
 const requireAgreements = (req,res,next) => {
   const u = req.user;
   if (!u.privacy_policy_agreed)
@@ -1017,7 +913,6 @@ const requireAgreements = (req,res,next) => {
   next();
 };
 
-// KYC gate — user must have approved KYC before withdrawing
 const requireKYC = (req, res, next) => {
   if (!req.user) return res.status(401).json({ error:'Unauthorized' });
   if (req.user.kycStatus !== 'approved')
@@ -1033,60 +928,23 @@ const signAccess  = (id, twoFAVerified=false) => jwt.sign({ id, twoFAVerified },
 const signRefresh = id => jwt.sign({ id }, JWT_REFRESH_SECRET, { expiresIn:'7d' });
 const signTemp    = id => jwt.sign({ id, temp:true }, JWT_SECRET, { expiresIn:'5m' });
 
-// CSRF tokens are signed JWTs so they can be verified without a server-side store
-const signCsrf = id => jwt.sign({ id:String(id), csrf:true }, JWT_SECRET, { expiresIn:'24h' });
-
 const setAuthCookies = (res, userId) => {
   const access  = signAccess(userId, true);
   const refresh = signRefresh(userId);
-  const csrf    = signCsrf(userId);
   const opts = { httpOnly:true, secure:IS_PROD, sameSite:IS_PROD?'none':'lax' };
   res.cookie('rf_access',  access,  { ...opts, maxAge:15*60*1000 });
   res.cookie('rf_refresh', refresh, { ...opts, maxAge:7*24*60*60*1000 });
-  // rf_csrf is NOT httpOnly so JS can read it and attach it as X-CSRF-Token
-  res.cookie('rf_csrf', csrf, { httpOnly:false, secure:IS_PROD, sameSite:IS_PROD?'none':'lax', maxAge:24*60*60*1000 });
-  return { access, refresh, csrf };
+  return { access, refresh };
 };
-const clearAuthCookies = res => {
-  res.clearCookie('rf_access');
-  res.clearCookie('rf_refresh');
-  res.clearCookie('rf_csrf');
-};
-
-// CSRF middleware — validates X-CSRF-Token on all non-safe, non-auth requests.
-// Safe methods (GET/HEAD/OPTIONS) never mutate state, so they are exempt.
-// Auth bootstrap endpoints (login/register/refresh) are exempt because they
-// run before a CSRF cookie exists; they rely on rate-limiting instead.
-const CSRF_EXEMPT_PATHS = new Set([
-  '/api/auth/login', '/api/auth/register', '/api/auth/refresh',
-  '/api/auth/logout', '/api/auth/forgot-password', '/api/auth/reset-password',
-  '/api/auth/resend-verification',
-  '/api/auth/google', '/api/auth/google/callback',
-]);
-const csrfMiddleware = (req, res, next) => {
-  if (['GET','HEAD','OPTIONS'].includes(req.method)) return next();
-  if (CSRF_EXEMPT_PATHS.has(req.path) || req.path.startsWith('/api/auth/verify-email/')) return next();
-  // No CSRF cookie means the user is not logged in — auth middleware will handle it
-  if (!req.cookies?.rf_csrf) return next();
-  const token = req.headers['x-csrf-token'];
-  if (!token) return res.status(403).json({ error:'CSRF token missing — include X-CSRF-Token header' });
-  try {
-    const dec = jwt.verify(token, JWT_SECRET);
-    if (!dec.csrf) throw new Error('not a csrf token');
-    return next();
-  } catch {
-    return res.status(403).json({ error:'CSRF token invalid or expired — re-login to refresh' });
-  }
-};
-app.use(csrfMiddleware);
+const clearAuthCookies = res => { res.clearCookie('rf_access'); res.clearCookie('rf_refresh'); };
 
 const sendNotification = async (data) => {
   const n   = await Notification.create(data);
   const pop = await Notification.findById(n._id).populate('sender','username avatar');
-  // Real-time delivery via socket.io (instant when tab open)
+
   io.to(`user:${data.recipient}`).emit('notification', pop);
   io.to(`user:${data.recipient}`).emit('notif:ping', { count: 1 });
-  // Web Push delivery (reaches user even when tab is closed)
+
   sendPushToUser(data.recipient, {
     title: data.title   || 'RawFlip',
     body:  data.message || '',
@@ -1095,7 +953,6 @@ const sendNotification = async (data) => {
   return pop;
 };
 
-// ── Web Push: send to all subscriptions for a user ──────────────────────
 async function sendPushToUser(userId, payload) {
   if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return;
   try {
@@ -1107,7 +964,7 @@ async function sendPushToUser(userId, payload) {
         JSON.stringify(payload)
       ).catch(async err => {
         if (err.statusCode === 410 || err.statusCode === 404) {
-          // Subscription expired or invalid — clean up
+
           await PushSub.deleteOne({ _id: sub._id });
           console.log('[Push] removed stale subscription');
         } else {
@@ -1131,28 +988,8 @@ const paginate = req => {
 };
 const convId = (a,b) => [a.toString(),b.toString()].sort().join(':');
 const fingerprintDevice = req => crypto.createHash('sha256').update(`${req.ip||''}|${req.headers['user-agent']||''}`).digest('hex').slice(0,16);
-
-// Returns the next unique user number atomically (no race condition).
-// Uses MongoDB findOneAndUpdate($inc) on the counters collection.
-// Unambiguous 6-char uppercase alphanumeric code (no 0/O/1/I confusion)
-function genCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const bytes = crypto.randomBytes(6);
-  return Array.from(bytes, b => chars[b % chars.length]).join('');
-}
-
-async function getNextUserNumber(session) {
-  const doc = await Counter.findOneAndUpdate(
-    { _id: 'userNumber' },
-    { $inc: { seq: 1 } },
-    { upsert: true, new: true, ...(session ? { session } : {}) }
-  );
-  return doc.seq;
-}
 const getClientIp = req => (req.headers['x-forwarded-for']||'').split(',')[0].trim() || req.ip || '';
 
-// ── Get active plan for user ───────────────────────────────────────────────────
-// Returns true if user is an early adopter still within the perk window
 function isEarlyAdopterActive(user) {
   if (!user || !user.isEarlyAdopter || !user.earlyAdopterGrantedAt) return false;
   const exp = new Date(user.earlyAdopterGrantedAt);
@@ -1160,36 +997,55 @@ function isEarlyAdopterActive(user) {
   return new Date() < exp;
 }
 
-// Returns days remaining in EA free window (negative = expired)
-function eaDaysRemaining(user) {
-  if (!user || !user.isEarlyAdopter || !user.earlyAdopterGrantedAt) return null;
+function isFoundingMemberActive(user) {
+  if (!user || !user.isEarlyAdopter || !user.earlyAdopterGrantedAt) return false;
+  if (user.earlyAdopterNumber && user.earlyAdopterNumber > FOUNDING_MEMBER_LIMIT) return false;
   const exp = new Date(user.earlyAdopterGrantedAt);
-  exp.setMonth(exp.getMonth() + EARLY_ADOPTER_PERK_MONTHS);
-  return Math.ceil((exp - Date.now()) / 86400000);
+  exp.setDate(exp.getDate() + FOUNDING_MEMBER_PERK_DAYS);
+  return new Date() < exp;
 }
 
-// Get legacy plan object if user is on a legacy plan
-function getLegacyPlan(user) {
-  if (!user || !user.legacyPlan || user.legacyPlan === 'none') return null;
-  return LEGACY_PLANS[user.legacyPlan] || null;
+function getFoundingMemberExpiry(user) {
+  if (!user || !user.earlyAdopterGrantedAt) return null;
+  const exp = new Date(user.earlyAdopterGrantedAt);
+  exp.setDate(exp.getDate() + FOUNDING_MEMBER_PERK_DAYS);
+  return exp;
+}
+
+function calculateDepositFee(amount, user) {
+  if (isFoundingMemberActive(user)) return 0;
+  return calcBlockFee(amount);
+}
+
+function calculateWithdrawalFee(amount, user) {
+  if (isFoundingMemberActive(user)) return 0;
+  return calcBlockFee(amount);
+}
+
+function calculateEscrowFee(escrowAmount, feePercent, user) {
+  if (isFoundingMemberActive(user)) return 0;
+  return Math.round(escrowAmount * feePercent / 100);
 }
 
 function getActivePlan(user) {
-  // Early adopter free window — treat as Pro-equivalent
-  if (isEarlyAdopterActive(user)) return { ...PLANS.pro, escrowFeePercent: 0 };
-  // Legacy paid plans (post EA window, founding members only)
-  if (user.legacyPlan && user.legacyPlan !== 'none' && LEGACY_PLANS[user.legacyPlan]) {
-    const lp = LEGACY_PLANS[user.legacyPlan];
-    if (user.planExpiresAt && new Date(user.planExpiresAt) < new Date()) return PLANS.free;
-    return lp;
+  // Founding Members in their 180-day window are never on Free plan
+  if (isFoundingMemberActive(user)) {
+    // If they've locked in a Legacy plan, use that
+    if (user.activePlan && LEGACY_PLANS[user.activePlan]) return LEGACY_PLANS[user.activePlan];
+    // If they have an active paid plan, use that
+    if (user.activePlan && user.activePlan !== 'free' && PLANS[user.activePlan]) {
+      if (!user.planExpiresAt || new Date(user.planExpiresAt) >= new Date()) return PLANS[user.activePlan];
+    }
+    // Otherwise synthesise a Founding Member pro-equivalent plan
+    return { id:'founding_member', name:'Founding Member', costNGN:0, escrowFeePercent:0, listingLimit:Infinity, minWithdrawal:0, features:['All Pro features','Zero fees (180-day perk)','Raw Industrial Badge'] };
   }
-  // Standard plans
   if (!user.activePlan || user.activePlan === 'free') return PLANS.free;
-  if (user.planExpiresAt && new Date(user.planExpiresAt) < new Date()) return PLANS.free;
+  if (user.planExpiresAt && new Date(user.planExpiresAt) < new Date()) {
+    return PLANS.free;
+  }
   return PLANS[user.activePlan] || LEGACY_PLANS[user.activePlan] || PLANS.free;
 }
 
-// ── Wallet helpers ─────────────────────────────────────────────────────────────
 async function walletMove({ session, userId, fromBucket, toBucket, amount, type, note, transactionId, fee=0 }) {
   const allInc = {};
   if (fromBucket !== 'external') allInc[`${fromBucket}Balance`] = -amount;
@@ -1206,7 +1062,6 @@ async function walletMove({ session, userId, fromBucket, toBucket, amount, type,
   return user;
 }
 
-// Credit referral bonus atomically (to earningsBalance)
 async function creditEarnings({ session, userId, amount, note, type='referral_bonus' }) {
   const user = await User.findByIdAndUpdate(userId, { $inc:{ earningsBalance:amount } }, { new:true, session });
   await WalletTx.create([{ user:userId, type, fromBucket:'external', toBucket:'earnings', amount, currency:'NGN', status:'completed', note }], { session });
@@ -1214,7 +1069,6 @@ async function creditEarnings({ session, userId, amount, note, type='referral_bo
   return user;
 }
 
-// ── Referral reward engine ─────────────────────────────────────────────────────
 async function processReferralEmailVerify(referee) {
   if (!referee.referredBy) return;
   const ref = await Referral.findOne({ referrerId:referee.referredBy, refereeId:referee._id });
@@ -1223,18 +1077,18 @@ async function processReferralEmailVerify(referee) {
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
-      // Referrer reward
+
       await creditEarnings({ session, userId:referee.referredBy, amount:REFERRAL_REWARDS.referrer_email_verify, note:`Referral reward: ${referee.username} verified email` });
-      // Referee welcome bonus
+
       await creditEarnings({ session, userId:referee._id, amount:REFERRAL_REWARDS.referee_welcome, note:'Welcome bonus for joining via referral' });
-      // Mark paid
+
       await Referral.findByIdAndUpdate(ref._id, { emailVerifyRewardPaid:true }, { session });
-      // Update referrer counts
+
       await User.findByIdAndUpdate(referee.referredBy, { $inc:{ referralCount:1, referralEarnings:REFERRAL_REWARDS.referrer_email_verify } }, { session });
     });
-    // Check milestones after reward
+
     await checkReferralMilestones(referee.referredBy, ref._id);
-    // Emails
+
     const [referrer, refereeUser] = await Promise.all([User.findById(referee.referredBy), User.findById(referee._id)]);
     if (referrer) sendEmail(referrer.email, emailTemplates.referralBonus(referrer.username, REFERRAL_REWARDS.referrer_email_verify, `${referee.username} verified their email`)).catch(()=>{});
     sendNotification({ recipient:referee.referredBy, type:'referral_bonus', title:'Referral Reward!', message:`₦${REFERRAL_REWARDS.referrer_email_verify.toLocaleString()} earned — ${referee.username} verified email`, link:'/wallet' }).catch(()=>{});
@@ -1293,7 +1147,6 @@ async function checkReferralMilestones(referrerId, refId) {
   }
 }
 
-// ── Subscription engine ────────────────────────────────────────────────────────
 async function giftSubscription({ session, userId, planId, durationDays, giftedBy }) {
   const plan = PLANS[planId];
   const startDate = new Date();
@@ -1315,7 +1168,7 @@ async function purchaseSubscription(userId, planId) {
   let sub;
   try {
     await session.withTransaction(async () => {
-      // Deduct from combined balance (available first, then earnings)
+
       let remaining = plan.costNGN;
       const freshUser = await User.findById(userId).session(session);
       if (!freshUser) throw new Error('User not found');
@@ -1323,13 +1176,12 @@ async function purchaseSubscription(userId, planId) {
         throw new Error(`Insufficient balance. Need ₦${plan.costNGN.toLocaleString()} for ${plan.name} plan.`);
       }
 
-      // Drain available first
       const fromAvailable = Math.min(freshUser.availableBalance, remaining);
       if (fromAvailable > 0) {
         await walletMove({ session, userId, fromBucket:'available', toBucket:'external', amount:fromAvailable, type:'subscription', note:`${plan.name} plan subscription` });
         remaining -= fromAvailable;
       }
-      // Then drain earnings if needed
+
       if (remaining > 0) {
         const fromEarnings = Math.min(freshUser.earningsBalance, remaining);
         await User.findByIdAndUpdate(userId, { $inc:{ earningsBalance:-fromEarnings } }, { session });
@@ -1340,20 +1192,13 @@ async function purchaseSubscription(userId, planId) {
 
       sub = await Subscription.create([{ userId, plan:planId, costNGN:plan.costNGN, startDate, endDate, status:'active' }], { session });
       sub = sub[0];
-      // Set isVerified badge based on plan (basic/pro get badge, free loses it)
-      const planGrantsBadge = planId === 'basic' || planId === 'pro';
-      const isLegacyPlan = !!LEGACY_PLANS[planId];
-      await User.findByIdAndUpdate(userId, {
-        activePlan: planId,
-        planExpiresAt: endDate,
-        isVerified: planGrantsBadge,
-        ...(isLegacyPlan ? { legacyPlan: planId } : {}),
-      }, { session });
 
-      // Process referral commission — Pro referrers earn 12%, others earn 8%
+      const planGrantsBadge = ['basic','pro','legacy_basic','legacy_pro'].includes(planId);
+      await User.findByIdAndUpdate(userId, { activePlan:planId, planExpiresAt:endDate, isVerified:planGrantsBadge }, { session });
+
       const ref = await Referral.findOne({ refereeId:userId }).session(session);
       if (ref && !ref.locked) {
-        const referrerDoc = await User.findById(ref.referrerId).select('activePlan planExpiresAt isEarlyAdopter earlyAdopterGrantedAt').session(session);
+        const referrerDoc = await User.findById(ref.referrerId).select('activePlan planExpiresAt').session(session);
         const referrerPlan = getActivePlan(referrerDoc);
         const commRate = referrerPlan.id === 'pro' ? REFERRAL_REWARDS.subscription_commission_pro : REFERRAL_REWARDS.subscription_commission;
         const commPct  = Math.round(commRate * 100);
@@ -1371,7 +1216,6 @@ async function purchaseSubscription(userId, planId) {
   } finally { await session.endSession(); }
 }
 
-// ── Elasticsearch ──────────────────────────────────────────────────────────────
 let esClient = null;
 const ES_INDEX = 'rawflip_listings';
 async function initES() {
@@ -1396,7 +1240,6 @@ async function esIndex(l) {
 }
 async function esDelete(id) { if (!esClient) return; try { await esClient.delete({ index:ES_INDEX, id:id.toString() }); } catch {} }
 
-// ── Google OAuth ───────────────────────────────────────────────────────────────
 if (process.env.GOOGLE_CLIENT_ID) {
   passport.use(new GoogleStrategy({
     clientID:process.env.GOOGLE_CLIENT_ID, clientSecret:process.env.GOOGLE_CLIENT_SECRET,
@@ -1411,15 +1254,38 @@ if (process.env.GOOGLE_CLIENT_ID) {
         const base = profile.displayName?.replace(/[^a-zA-Z0-9_]/g,'').slice(0,28) || 'user';
         let username = base; let n=1;
         while (await User.findOne({ username })) username=`${base}${n++}`;
-        const userNumG = await getNextUserNumber();
-        const isEarlyG = userNumG <= EARLY_ADOPTER_LIMIT;
+        const userNumG  = await getNextUserNumber();
+        const isEarlyG  = userNumG <= EARLY_ADOPTER_LIMIT;
+        const isFMG     = isEarlyG && userNumG <= FOUNDING_MEMBER_LIMIT;
+        // Google users are email-verified immediately — clock starts now
+        const grantedAt = isEarlyG ? new Date() : null;
         user = await User.create({
           googleId:profile.id, username, email, avatar:avatar.replace(/s\d+/,'s200'), emailVerified:true,
-          earlyAdopterNumber:userNumG, isEarlyAdopter:isEarlyG,
-          earlyAdopterGrantedAt:isEarlyG?new Date():null,
+          userNumber:userNumG, isEarlyAdopter:isEarlyG,
+          earlyAdopterNumber: isEarlyG ? userNumG : null,
+          earlyAdopterGrantedAt: grantedAt,
           isVerified:isEarlyG,
+          priority_support: isFMG,
         });
-        sendEmail(email, emailTemplates.welcome(username)).catch(()=>{});
+        if (isFMG) {
+          const rank = userNumG;
+          sendEmail(email, emailTemplates.foundingMemberWelcome(username, rank)).catch(()=>{});
+          sendNotification({
+            recipient: user._id, type:'system',
+            title:`⚒️ Welcome, Founding Member #${rank}!`,
+            message:`ACCESS GRANTED. Your 180-day zero-fee access is now active. Visit the Subscription page to see your full perks and Legacy pricing options.`,
+            link:'/subscription',
+          }).catch(()=>{});
+          Post.create({
+            author: user._id,
+            title: `Founding Member #${rank} has joined the marketplace!`,
+            content: `⚒️ I just joined RawFlip as Founding Member #${rank}! Excited to be part of the first 200 building this marketplace. Let's get flipping!`,
+            type: 'discussion',
+            tags: ['founding-member','introduction'],
+          }).catch(()=>{});
+        } else {
+          sendEmail(email, emailTemplates.welcome(username)).catch(()=>{});
+        }
       } else if (!user.googleId) {
         user.googleId = profile.id; user.emailVerified = true;
         if (!user.avatar && avatar) user.avatar = avatar;
@@ -1430,78 +1296,20 @@ if (process.env.GOOGLE_CLIENT_ID) {
   }));
 }
 
-// ══ ROUTER ════════════════════════════════════════════════════════════════════
-
-// GET /auth/csrf-token — called by frontend on startup to obtain a CSRF cookie
-// when it doesn't already have one (e.g. after hard-refresh while logged in)
-router.get('/auth/csrf-token', auth, asyncH(async (req, res) => {
-  const csrf = signCsrf(req.user._id);
-  res.cookie('rf_csrf', csrf, { httpOnly:false, secure:IS_PROD, sameSite:IS_PROD?'none':'lax', maxAge:24*60*60*1000 });
-  res.json({ csrfToken: csrf });
-}));
-
-// Close the thread/dispute linked to a transaction and notify both parties.
-// Called whenever a transaction reaches a terminal state.
 async function closeConvForTx(txId, reason='') {
   try {
-    if (!txId) return;
-    const tx = await Transaction.findById(txId).lean();
-    if (!tx) return;
 
-    // Resolve any open Dispute attached to this transaction
-    const dispute = await Dispute.findOne({
-      transactionId: txId,
-      status: { $in: ['OPEN','RESPONDED','ESCALATED'] },
-    });
-    if (dispute) {
-      dispute.status     = 'RESOLVED';
-      dispute.resolution = reason || 'Transaction closed';
-      dispute.resolvedAt = new Date();
-      await dispute.save();
-    }
-
-    const reasonLabels = {
-      transaction_completed: 'Transaction completed successfully.',
-      transaction_cancelled: 'Transaction was cancelled.',
-      admin_force_released:  'Admin released escrow funds.',
-      admin_force_refunded:  'Admin issued a refund.',
-      auto_released:         'Funds auto-released after delivery window.',
-      auto_cancelled:        'Transaction auto-cancelled — no action from seller.',
-    };
-    const label = reasonLabels[reason] || 'Transaction closed.';
-    const title = (reason === 'transaction_completed' || reason === 'auto_released')
-      ? '📦 Order Completed' : '📦 Order Closed';
-
-    // Notify buyer and seller
-    await Promise.allSettled([tx.buyerId, tx.sellerId].map(uid =>
-      sendNotification({
-        recipient:    uid,
-        type:         'system',
-        title,
-        message:      label + (tx.itemTitle ? ` — "${tx.itemTitle.slice(0,60)}"` : ''),
-        link:         '/transactions',
-        transactionId: tx._id,
-      })
-    ));
-
-    // Push real-time socket event so open tabs update instantly
-    io.to(`user:${tx.buyerId}`).emit('transaction:closed',  { txId, reason });
-    io.to(`user:${tx.sellerId}`).emit('transaction:closed', { txId, reason });
-  } catch(e) {
-    console.warn('[closeConvForTx]', e.message);
-  }
+  } catch(e) {  }
 }
 
-
-// ── KYC Document Schema ────────────────────────────────────────────────────────
 const kycSchema = new mongoose.Schema({
   user:         { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, unique:true },
   fullName:     { type:String, required:true, trim:true },
-  dob:          { type:String, required:true },           // date of birth YYYY-MM-DD
+  dob:          { type:String, required:true },
   idType:       { type:String, required:true, enum:['nin','bvn','passport','drivers_license','voters_card'] },
   idNumber:     { type:String, required:true, trim:true },
-  idDocUrl:     { type:String, required:true },           // uploaded doc image path
-  selfieUrl:    { type:String, required:true },           // selfie with ID image path
+  idDocUrl:     { type:String, required:true },
+  selfieUrl:    { type:String, required:true },
   address:      { type:String, required:true, trim:true },
   status:       { type:String, enum:['pending','approved','rejected'], default:'pending' },
   adminNote:    { type:String, default:'' },
@@ -1510,8 +1318,6 @@ const kycSchema = new mongoose.Schema({
 }, { timestamps:true });
 const KycDoc = mongoose.model('KycDoc', kycSchema);
 
-
-// ── Web Push Subscription Schema ────────────────────────────────────────────
 const pushSubscriptionSchema = new mongoose.Schema({
   user:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   endpoint: { type: String, required: true, unique: true },
@@ -1522,12 +1328,84 @@ const pushSubscriptionSchema = new mongoose.Schema({
 }, { timestamps: true });
 const PushSub = mongoose.model('PushSub', pushSubscriptionSchema);
 
+const counterSchema = new mongoose.Schema({ _id:String, seq:{ type:Number, default:0 } });
+const Counter = mongoose.model('Counter', counterSchema);
+async function getNextUserNumber() {
+  const doc = await Counter.findByIdAndUpdate(
+    'userNumber',
+    { $inc:{ seq:1 } },
+    { new:true, upsert:true, setDefaultsOnInsert:true }
+  );
+  return doc.seq;
+}
+
+function genCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(6);
+  return Array.from(bytes, b => chars[b % chars.length]).join('');
+}
+
+const CSRF_SECRET = process.env.CSRF_SECRET || JWT_SECRET + '_csrf';
+function signCsrf(userId) {
+  const payload = `${userId}:${Math.floor(Date.now()/3600000)}`;
+  const sig = crypto.createHmac('sha256', CSRF_SECRET).update(payload).digest('hex').slice(0,32);
+  return `${payload}:${sig}`;
+}
+function verifyCsrf(token, userId) {
+  if (!token || !userId) return false;
+  const parts = token.split(':');
+  if (parts.length < 3) return false;
+  const [uid, hour, sig] = parts;
+  if (uid !== String(userId)) return false;
+  const now = Math.floor(Date.now()/3600000);
+
+  return [now, now-1].some(h => {
+    const expected = crypto.createHmac('sha256', CSRF_SECRET).update(`${uid}:${h}`).digest('hex').slice(0,32);
+    return expected === sig;
+  });
+}
+function csrfMiddleware(req, res, next) {
+  if (!['POST','PUT','DELETE','PATCH'].includes(req.method)) return next();
+
+  const skip = ['/auth/login','/auth/register','/auth/login/2fa','/auth/forgot-password',
+    '/auth/reset-password','/auth/verify-code','/auth/resend-verify','/auth/resend-verification',
+    '/auth/google','/auth/google/callback'];
+  if (skip.some(p => req.path.includes(p))) return next();
+
+  if (!req.user) return next();
+  const token = req.headers['x-csrf-token'] || req.body?._csrf;
+  if (!verifyCsrf(token, req.user._id)) {
+    return res.status(403).json({ error: 'Invalid or missing CSRF token. Please refresh the page.' });
+  }
+  next();
+}
+
+const router = express.Router();
+
+router.get('/auth/code-status', asyncH(async (req, res) => {
+  const { email, type } = req.query;
+  if (!email || !['verify','reset'].includes(type)) return res.status(400).json({ error:'Bad params' });
+  const select = type==='verify'
+    ? '+verifyCode +verifyCodeExpires +verifyCodeSentAt emailVerified'
+    : '+resetCode  +resetCodeExpires  +resetCodeSentAt';
+  const user = await User.findOne({ email: email.trim().toLowerCase() }).select(select);
+  if (!user) return res.json({ exists: false });
+  if (type==='verify' && user.emailVerified) return res.json({ exists:true, alreadyVerified:true });
+  const expiresAt = type==='verify' ? user.verifyCodeExpires : user.resetCodeExpires;
+  const sentAt    = type==='verify' ? user.verifyCodeSentAt  : user.resetCodeSentAt;
+  const hasCode   = !!(type==='verify' ? user.verifyCode : user.resetCode);
+  res.json({ exists:true, hasCode, expiresAt: expiresAt?.toISOString()||null, sentAt: sentAt?.toISOString()||null });
+}));
+
+router.get('/auth/csrf-token', auth, asyncH(async (req, res) => {
+  const csrf = signCsrf(req.user._id);
+  res.cookie('rf_csrf', csrf, { httpOnly:false, secure:IS_PROD, sameSite:IS_PROD?'none':'lax', maxAge:24*60*60*1000 });
+  res.json({ csrfToken: csrf });
+}));
 
 router.get('/health', (_,res) => res.json({ ok:true, ts:Date.now(), env:process.env.NODE_ENV||'development', ngnUsdRate:currencyConfig.rate }));
 router.get('/currency/rate', (_,res) => res.json({ rate:currencyConfig.rate, currency:'NGN', secondary:'USD' }));
-router.get('/plans', (_,res) => res.json({ plans:PLANS }));
-
-// ══ AUTH ══════════════════════════════════════════════════════════════════════
+router.get('/plans', (_,res) => res.json({ plans:PLANS, legacyPlans:LEGACY_PLANS }));
 
 router.post('/auth/register', [
   body('username').trim().isLength({ min:3, max:30 }).withMessage('Username must be 3–30 characters').matches(/^[a-zA-Z0-9_.-]+$/).withMessage('Username can only contain letters, numbers, _ . -'),
@@ -1545,45 +1423,26 @@ router.post('/auth/register', [
   const ip = getClientIp(req);
   const fp = fingerprintDevice(req);
 
-  // Resolve referrer — multi-signal abuse check
   let referrer = null;
-  let referralSuspicious = false;
-  let referralSuspiciousReason = '';
   if (referralCode) {
     referrer = await User.findOne({ referralCode });
-    if (!referrer)
-      return res.status(400).json({ errors:[{ field:'referralCode', message:'Invalid referral code' }] });
-    if (referrer.email === email)
-      return res.status(400).json({ errors:[{ field:'referralCode', message:'You cannot use your own referral code' }] });
-    // Hard block: same IP as referrer's registration
+    if (!referrer) return res.status(400).json({ error:'Invalid referral code' });
+
+    if (referrer.email === email) return res.status(400).json({ error:'Cannot use your own referral code' });
+
     if (referrer.registrationIp && referrer.registrationIp === ip) {
-      console.warn(`[Referral] Same-IP block: referrer=${referrer._id} ip=${ip}`);
-      return res.status(400).json({ errors:[{ field:'referralCode', message:'Referral code cannot be used from the same network as the referrer' }] });
-    }
-    // Velocity check: max 5 new referrals per 24 h for this referrer
-    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const recentCount = await Referral.countDocuments({ referrerId: referrer._id, createdAt: { $gte: oneDayAgo } });
-    if (recentCount >= 5) {
-      referralSuspicious = true;
-      referralSuspiciousReason = `velocity:${recentCount + 1}/24h`;
-      console.warn(`[Referral] velocity limit: referrer=${referrer._id} count=${recentCount + 1}`);
-    }
-    // Device fingerprint match between referee and referrer's last-known device
-    const referrerLastFp = referrer.loginHistory?.[0]?.fingerprint;
-    if (referrerLastFp && referrerLastFp === fp) {
-      referralSuspicious = true;
-      referralSuspiciousReason += (referralSuspiciousReason ? '; ' : '') + 'device-match';
-      console.warn(`[Referral] device-fingerprint match: fp=${fp}`);
+      console.warn(`[Referral] Same IP abuse attempt: ${ip}`);
+      return res.status(400).json({ error:'Referral code cannot be used from same IP' });
     }
   }
 
   const verifyCode = genCode();
-  const codeExpiry = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
-  // Atomically claim the next user number — eliminates the race condition
-  const eaNumber = await getNextUserNumber();
-  const isEA = eaNumber <= EARLY_ADOPTER_LIMIT;
-  // Accept agreement flags from registration form — record immediately
-  // Frontend sends agreePrivacy/agreeTerms/agreeAbout:true when checkboxes are ticked
+  const codeExpiry = new Date(Date.now() + 30 * 60 * 1000);
+
+  const userNum = await getNextUserNumber();
+  const isEA    = userNum <= EARLY_ADOPTER_LIMIT;
+  const eaNumber = isEA ? userNum : null;
+
   const now = new Date();
   const regAgreements = {};
   if (req.body.agreePrivacy === true || req.body.agreePrivacy === 'true') {
@@ -1595,11 +1454,7 @@ router.post('/auth/register', [
     regAgreements.terms_agreed_at = now;
     regAgreements.terms_version   = CURRENT_TERMS_VERSION;
   }
-  // agreeAbout = peer-to-peer / not-insured disclosure — now captured at registration
-  if (req.body.agreeAbout === true || req.body.agreeAbout === 'true') {
-    regAgreements.about_understood    = true;
-    regAgreements.about_understood_at = now;
-  }
+
   const user  = await User.create({
     username, email, password,
     phone: req.body.phone || '',
@@ -1612,41 +1467,29 @@ router.post('/auth/register', [
     registrationIp:ip,
     isEarlyAdopter:isEA,
     earlyAdopterNumber:eaNumber,
-    earlyAdopterGrantedAt:isEA ? new Date() : null,
-    isVerified:isEA,  // early adopters get verified badge automatically
-    ...regAgreements, // record any agreements ticked on registration form
+    earlyAdopterGrantedAt: null, // Set at email verification so the 180-day clock starts when they can actually use the platform
+    isVerified:isEA,
+    priority_support: isEA && eaNumber <= FOUNDING_MEMBER_LIMIT,
+    ...regAgreements,
   });
 
   if (referrer) {
-    const refDoc = await Referral.create({
-      referrerId:referrer._id, refereeId:user._id,
-      refereeIp:ip, refereeDevice:fp,
-      referrerDevice: referrer.loginHistory?.[0]?.fingerprint || '',
-      suspicious: referralSuspicious,
-      suspiciousReason: referralSuspiciousReason,
-      // Lock rewards immediately if suspicious — admin must unflag before payout
-      ...(referralSuspicious ? { locked:true, lockedReason:referralSuspiciousReason } : {}),
-    });
-    if (referralSuspicious) {
-      // Notify the referrer so they know a review is pending
-      sendNotification({
-        recipient: referrer._id, type:'system',
-        title:'⚠️ Referral Flagged for Review',
-        message:`A new referral was flagged (${referralSuspiciousReason}). Rewards are on hold pending admin review.`,
-        link:'/referral',
-      }).catch(()=>{});
-    }
+    await Referral.create({ referrerId:referrer._id, refereeId:user._id, refereeIp:ip, refereeDevice:fp });
   }
 
   sendEmail(email, emailTemplates.verifyEmail(username, verifyCode)).catch(()=>{});
-  // NOTE: Founding Member welcome email is sent AFTER email verification (in verify-email route)
-  res.status(201).json({ ok:true, message:t('auth.register.success') });
+  res.status(201).json({
+    ok: true,
+    message: t('auth.register.success'),
+    isFoundingMember: isEA && eaNumber <= FOUNDING_MEMBER_LIMIT,
+    rank: isEA && eaNumber <= FOUNDING_MEMBER_LIMIT ? eaNumber : null,
+    expiresAt: codeExpiry.toISOString(),
+  });
 }));
 
-// POST /auth/verify-code — submit 6-char code to verify email
 router.post('/auth/verify-code', [
   body('email').isEmail().normalizeEmail(),
-  body('code').isString().trim().isLength({ min:4, max:8 }).toUpperCase(),
+  body('code').isString().trim().isLength({ min:4, max:8 }),
 ], validate, authLimiter, asyncH(async (req, res) => {
   const { email, code } = req.body;
   const user = await User.findOne({ email })
@@ -1655,27 +1498,47 @@ router.post('/auth/verify-code', [
   if (user.emailVerified) return res.json({ ok: true, alreadyVerified: true });
   if (!user.verifyCode || !user.verifyCodeExpires || user.verifyCodeExpires < new Date())
     return res.status(400).json({ error: 'Code expired. Request a new one.', expired: true });
-  if (user.verifyCode.toUpperCase() !== code.toUpperCase())
+  if (user.verifyCode.toUpperCase() !== code.trim().toUpperCase())
     return res.status(400).json({ error: 'Incorrect code. Check your email and try again.' });
-  // Code correct — activate account
-  user.emailVerified    = true;
-  user.verifyCode       = null;
-  user.verifyCodeExpires= null;
-  user.verifyCodeSentAt = null;
+  user.emailVerified     = true;
+  user.verifyCode        = null;
+  user.verifyCodeExpires = null;
+  user.verifyCodeSentAt  = null;
+  // Start the 180-day FM clock now — at the moment they verify and can actually use the platform
+  if (user.isEarlyAdopter && !user.earlyAdopterGrantedAt) {
+    user.earlyAdopterGrantedAt = new Date();
+  }
   await user.save();
   processReferralEmailVerify(user).catch(()=>{});
-  if (user.isEarlyAdopter && user.earlyAdopterNumber) {
-    sendEmail(user.email, emailTemplates.foundingMember(user.username, user.earlyAdopterNumber)).catch(()=>{});
-    sendNotification({
-      recipient: user._id, type:'system',
-      title:'🏆 Welcome, Founding Member!',
-      message:`You are Founding Member No. ${user.earlyAdopterNumber} of 200. Enjoy 6 months of free premium access, zero fees, and unlimited listings!`,
-      link:'/subscription',
-    }).catch(()=>{});
-  }
-  res.json({ ok: true });
-}));
 
+  const isFoundingMember = user.isEarlyAdopter && user.earlyAdopterNumber && user.earlyAdopterNumber <= FOUNDING_MEMBER_LIMIT;
+  if (isFoundingMember) {
+    const rank = user.earlyAdopterNumber;
+    console.log(`[FM] Sending welcome email to ${user.email} (Founding Member #${rank})`);
+    sendEmail(user.email, emailTemplates.foundingMemberWelcome(user.username, rank)).catch((err) => {
+      console.error(`[FM] Welcome email FAILED for ${user.email}:`, err.message);
+    });
+    sendNotification({
+      recipient: user._id,
+      type: 'system',
+      title: `⚒️ Welcome, Founding Member #${rank}!`,
+      message: `ACCESS GRANTED. Your 180-day zero-fee access is now active. Visit the Subscription page to see your full perks and Legacy pricing options.`,
+      link: '/subscription',
+    }).catch(()=>{});
+    const welcomePost = `⚒️ I just joined RawFlip as Founding Member #${rank}! Excited to be part of the first 200 building this marketplace. Let's get flipping!`;
+    Post.create({
+      author: user._id,
+      title: `Founding Member #${rank} has joined the marketplace!`,
+      content: welcomePost,
+      type: 'discussion',
+      tags: ['founding-member','introduction'],
+    }).catch(()=>{});
+  } else {
+    sendEmail(user.email, emailTemplates.welcome(user.username)).catch(()=>{});
+  }
+
+  res.json({ ok: true, isFoundingMember, rank: isFoundingMember ? user.earlyAdopterNumber : null });
+}));
 
 router.post('/auth/login', [
   body('email').isEmail().normalizeEmail(),
@@ -1683,7 +1546,7 @@ router.post('/auth/login', [
 ], validate, asyncH(async (req,res) => {
   const { email, password, twoFACode } = req.body;
   const user = await User.findOne({ email }).select('+password +twoFASecret +twoFABackupCodes +refreshTokens +loginFailedCount +loginLockedUntil');
-  // Account lockout: too many failed attempts
+
   if (user && user.loginLockedUntil && user.loginLockedUntil > new Date()) {
     const wait = Math.ceil((user.loginLockedUntil - Date.now()) / 60000);
     return res.status(429).json({ error: `Account temporarily locked. Try again in ${wait} minute(s).` });
@@ -1698,10 +1561,32 @@ router.post('/auth/login', [
     }
     return res.status(401).json({ error: t('auth.login.invalid') });
   }
-  // Reset failed count on successful password match
+
   if (user.loginFailedCount) await User.findByIdAndUpdate(user._id, { loginFailedCount: 0, loginLockedUntil: null });
-  // Block unverified users
-  if (!user.emailVerified) return res.status(403).json({ error:t('auth.login.unverified'), unverified:true });
+
+  if (!user.emailVerified) {
+    const u2 = await User.findOne({ email }).select('+verifyCode +verifyCodeExpires +verifyCodeSentAt username email');
+    let autoResent = false;
+    const codeExpired = !u2?.verifyCodeExpires || u2.verifyCodeExpires < new Date();
+    const withinCooldown = u2?.verifyCodeSentAt && Date.now() - u2.verifyCodeSentAt.getTime() < 60000;
+    // Send a new code if: code is expired (always), or cooldown has passed (code still valid but user requested again)
+    if (u2 && (codeExpired || !withinCooldown)) {
+      const newCode = genCode();
+      u2.verifyCode = newCode; u2.verifyCodeExpires = new Date(Date.now()+30*60*1000); u2.verifyCodeSentAt = new Date();
+      await u2.save();
+      sendEmail(u2.email, emailTemplates.verifyEmail(u2.username, newCode)).catch(()=>{});
+      autoResent = true;
+    }
+    return res.status(403).json({
+      status: 'UNVERIFIED_ACCOUNT',
+      error: t('auth.login.unverified'),
+      autoResent,
+      codeWasExpired: codeExpired,
+      email,
+      expiresAt: u2?.verifyCodeExpires ? u2.verifyCodeExpires.toISOString() : null,
+    });
+  }
+
   if (!user.isActive) return res.status(403).json({ error:t('auth.login.suspended') });
 
   if (user.twoFAEnabled) {
@@ -1734,9 +1619,6 @@ router.post('/auth/login', [
   user.refreshTokens.push(refresh);
   await user.save();
   const safe = user.toObject(); delete safe.password; delete safe.refreshTokens; delete safe.twoFASecret; delete safe.twoFABackupCodes;
-  // Include computed EA fields so frontend doesn't need a second /auth/me call
-  safe.isEarlyAdopterActive = isEarlyAdopterActive(user);
-  safe.eaDaysRemaining      = eaDaysRemaining(user);
   res.json({ user:safe, token:access });
 }));
 
@@ -1773,11 +1655,32 @@ router.get('/auth/me', auth, asyncH(async (req,res) => {
     all_agreements_complete: !!(user.privacy_policy_agreed && user.about_understood && termsUpToDate),
     isEarlyAdopter: user.isEarlyAdopter || false,
     isEarlyAdopterActive: isEarlyAdopterActive(user),
-    eaDaysRemaining: eaDaysRemaining(user),
     earlyAdopterNumber: user.earlyAdopterNumber || null,
     earlyAdopterGrantedAt: user.earlyAdopterGrantedAt || null,
-    legacyPlan: user.legacyPlan || 'none',
-    earlyAdopterExpiresAt: user.earlyAdopterGrantedAt ? (() => { const d=new Date(user.earlyAdopterGrantedAt); d.setMonth(d.getMonth()+EARLY_ADOPTER_PERK_MONTHS); return d; })() : null,
+    earlyAdopterExpiresAt: user.earlyAdopterGrantedAt ? (() => { const d=new Date(user.earlyAdopterGrantedAt); d.setDate(d.getDate()+FOUNDING_MEMBER_PERK_DAYS); return d; })() : null,
+    isFoundingMember: isFoundingMemberActive(user),
+    foundingMemberRank: user.earlyAdopterNumber && user.earlyAdopterNumber <= FOUNDING_MEMBER_LIMIT ? user.earlyAdopterNumber : null,
+    foundingMemberExpiresAt: getFoundingMemberExpiry(user),
+    priority_support: !!(user.isEarlyAdopter && user.earlyAdopterNumber <= FOUNDING_MEMBER_LIMIT),
+    planLabel: (isFoundingMemberActive(user)) ? 'Founding Member (Premium Access)' : (plan.name || 'Free'),
+  });
+}));
+
+router.get('/auth/refresh-data', auth, asyncH(async (req,res) => {
+  const user = await User.findById(req.user._id).lean();
+  if (!user) return res.status(404).json({ error:t('not_found') });
+  const plan = getActivePlan(user);
+  const isFM = isFoundingMemberActive(user);
+  res.json({
+    ...user,
+    activePlanDetails: plan,
+    rate: currencyConfig.rate,
+    isFoundingMember: isFM,
+    foundingMemberRank: user.earlyAdopterNumber || null,
+    foundingMemberExpiresAt: getFoundingMemberExpiry(user),
+    priority_support: !!(user.isEarlyAdopter && user.earlyAdopterNumber <= FOUNDING_MEMBER_LIMIT),
+    planLabel: isFM ? 'Founding Member (Premium Access)' : (plan.name || 'Free'),
+    _refreshedAt: new Date().toISOString(),
   });
 }));
 
@@ -1785,17 +1688,15 @@ router.get('/auth/google', passport.authenticate('google', { scope:['profile','e
 router.get('/auth/google/callback', passport.authenticate('google', { session:false, failureRedirect:`${CLIENT_ORIGIN}?oauthError=1` }),
   asyncH(async (req,res) => {
     setAuthCookies(res, req.user._id);
-    // Fix #6: redirect without token in URL — auth via HTTP-only cookie
+
     res.redirect(`${CLIENT_ORIGIN}?oauth=success`);
   })
 );
 
-// POST /auth/resend-verify-code — resend email verification code (60s cooldown)
 async function handleResendVerifyCode(req, res) {
   const user = await User.findOne({ email: req.body.email })
     .select('+verifyCode +verifyCodeExpires +verifyCodeSentAt emailVerified username email');
-  if (!user || user.emailVerified) return res.json({ ok: true }); // don't leak
-  // 60-second cooldown
+  if (!user || user.emailVerified) return res.json({ ok: true });
   if (user.verifyCodeSentAt && Date.now() - user.verifyCodeSentAt.getTime() < 60_000)
     return res.status(429).json({ error: 'Please wait 60 seconds before requesting a new code.', tooSoon: true,
       waitMs: 60_000 - (Date.now() - user.verifyCodeSentAt.getTime()) });
@@ -1807,15 +1708,13 @@ async function handleResendVerifyCode(req, res) {
   sendEmail(user.email, emailTemplates.verifyEmail(user.username, code)).catch(()=>{});
   res.json({ ok: true, expiresAt: user.verifyCodeExpires.toISOString() });
 }
-// Both names for compatibility
-router.post('/auth/resend-verify',       [body('email').isEmail().normalizeEmail()], validate, authLimiter, asyncH(handleResendVerifyCode));
-router.post('/auth/resend-verification', [body('email').isEmail().normalizeEmail()], validate, authLimiter, asyncH(handleResendVerifyCode));
+router.post('/auth/resend-verify',        [body('email').isEmail().normalizeEmail()], validate, authLimiter, asyncH(handleResendVerifyCode));
+router.post('/auth/resend-verification',  [body('email').isEmail().normalizeEmail()], validate, authLimiter, asyncH(handleResendVerifyCode));
 
 router.post('/auth/forgot-password', [body('email').isEmail().normalizeEmail()], validate, strictLimiter, asyncH(async (req,res) => {
   const user = await User.findOne({ email:req.body.email })
     .select('+resetCode +resetCodeExpires +resetCodeSentAt username email');
   if (user) {
-    // 60-second cooldown
     if (user.resetCodeSentAt && Date.now() - user.resetCodeSentAt.getTime() < 60_000)
       return res.status(429).json({ error: 'Please wait 60 seconds before requesting a new code.', tooSoon: true,
         waitMs: 60_000 - (Date.now() - user.resetCodeSentAt.getTime()) });
@@ -1824,9 +1723,16 @@ router.post('/auth/forgot-password', [body('email').isEmail().normalizeEmail()],
     user.resetCodeExpires = new Date(Date.now() + 30 * 60 * 1000);
     user.resetCodeSentAt  = new Date();
     await user.save();
-    sendEmail(user.email, emailTemplates.resetPassword(user.username, code)).catch(()=>{});
+    sendEmail(user.email, { subject:'Your RawFlip password reset code', html: emailBase(`
+      <h2>Password Reset</h2>
+      <p>Hi <strong>${user.username}</strong>, your password reset code is:</p>
+      <div style='text-align:center;margin:24px 0'>
+        <div style='display:inline-block;background:#fff4f4;border:2px solid #ffc7c7;border-radius:14px;padding:16px 32px'>
+          <span style='font-size:2.2rem;font-weight:800;letter-spacing:.25em;color:#cc2200;font-family:monospace'>${code}</span>
+        </div>
+      </div>
+      <p style='text-align:center;font-size:.88rem;color:#4a4a6a'>⏱ Expires in <strong>30 minutes</strong>. Do not share this code.</p>`) }).catch(()=>{});
   }
-  // Always respond OK — never reveal whether the email exists
   res.json({ ok: true });
 }));
 
@@ -1840,7 +1746,7 @@ router.post('/auth/reset-password', [
     .select('+resetCode +resetCodeExpires +resetCodeSentAt password');
   if (!user || !user.resetCode || !user.resetCodeExpires || user.resetCodeExpires < new Date())
     return res.status(400).json({ error: 'Code expired. Request a new one.', expired: true });
-  if (user.resetCode.toUpperCase() !== code.toUpperCase())
+  if (user.resetCode.toUpperCase() !== code.trim().toUpperCase())
     return res.status(400).json({ error: 'Incorrect code. Check your email and try again.' });
   user.password         = password;
   user.resetCode        = null;
@@ -1851,30 +1757,8 @@ router.post('/auth/reset-password', [
   res.json({ ok: true });
 }));
 
-// GET /auth/code-status?email=...&type=verify|reset
-// Returns expiry info so the frontend can resume a live countdown after page reload
-router.get('/auth/code-status', asyncH(async (req, res) => {
-  const { email, type } = req.query;
-  if (!email || !['verify','reset'].includes(type)) return res.status(400).json({ error:'Bad params' });
-  const field = type === 'verify'
-    ? '+verifyCode +verifyCodeExpires +verifyCodeSentAt'
-    : '+resetCode  +resetCodeExpires  +resetCodeSentAt';
-  const user = await User.findOne({ email: email.trim().toLowerCase() }).select(field + ' emailVerified');
-  if (!user) return res.json({ exists: false });
-  if (type === 'verify' && user.emailVerified) return res.json({ exists: true, alreadyVerified: true });
-  const expiresAt  = type==='verify' ? user.verifyCodeExpires  : user.resetCodeExpires;
-  const sentAt     = type==='verify' ? user.verifyCodeSentAt   : user.resetCodeSentAt;
-  const hasCode    = !!(type==='verify' ? user.verifyCode : user.resetCode);
-  res.json({
-    exists: true, hasCode,
-    expiresAt:  expiresAt  ? expiresAt.toISOString()  : null,
-    sentAt:     sentAt     ? sentAt.toISOString()     : null,
-  });
-}));
-
-// Change password handler — shared by both routes
 async function handleChangePassword(req, res) {
-  // Accept field names from both old frontend (currentPassword) and new (oldPassword)
+
   const oldPw  = req.body.oldPassword || req.body.currentPassword;
   const newPw  = req.body.newPassword;
   if (!oldPw || !newPw) return res.status(400).json({ error:'Both current and new password are required' });
@@ -1886,12 +1770,11 @@ async function handleChangePassword(req, res) {
   clearAuthCookies(res);
   res.json({ ok:true, message:'Password updated successfully' });
 }
-// POST /auth/change-password (canonical)
+
 router.post('/auth/change-password', auth, asyncH(handleChangePassword));
-// PUT /users/me/password (frontend legacy alias)
+
 router.put('/users/me/password', auth, asyncH(handleChangePassword));
 
-// ── 2FA endpoints ──────────────────────────────────────────────────────────────
 router.post('/auth/2fa/setup', auth, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id);
   const secret = speakeasy.generateSecret({ name:`RawFlip (${user.username})` });
@@ -1910,7 +1793,7 @@ router.post('/auth/2fa/verify', auth, [body('token').isLength({ min:6,max:6 }).i
   const rawCodes = Array.from({ length:8 }, () => crypto.randomBytes(4).toString('hex').toUpperCase());
   const hashedCodes = await Promise.all(rawCodes.map(c => bcrypt.hash(c, 10)));
   user.twoFAEnabled = true; user.twoFABackupCodes = hashedCodes; await user.save();
-  res.json({ enabled:true, backupCodes:rawCodes }); // raw shown once only — user must save them
+  res.json({ enabled:true, backupCodes:rawCodes });
 }));
 
 router.post('/auth/2fa/disable', auth, [body('token').exists()], validate, asyncH(async (req,res) => {
@@ -1933,13 +1816,11 @@ router.post('/auth/2fa/disable', auth, [body('token').exists()], validate, async
   res.json({ disabled:true });
 }));
 
-// ── 2FA status (GET) — was missing from v7, frontend calls this ───────────────
 router.get('/auth/2fa/status', auth, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id).select('+twoFAEnabled +twoFABackupCodes');
   res.json({ enabled: !!user.twoFAEnabled, backupCodesRemaining: (user.twoFABackupCodes||[]).length });
 }));
 
-// ── DELETE /auth/2fa — frontend uses DELETE, server only had POST /auth/2fa/disable ─
 router.delete('/auth/2fa', auth, [body('code').notEmpty()], validate, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id).select('+twoFASecret +twoFABackupCodes');
   let valid = false;
@@ -1948,7 +1829,11 @@ router.delete('/auth/2fa', auth, [body('code').notEmpty()], validate, asyncH(asy
     valid = speakeasy.totp.verify({ secret, encoding:'base32', token:req.body.code, window:2 });
   } catch {}
   if (!valid) {
-    const bk = (user.twoFABackupCodes||[]).findIndex(c=>c===req.body.code);
+    let bk = -1;
+    const codes = user.twoFABackupCodes || [];
+    for (let i = 0; i < codes.length; i++) {
+      if (await bcrypt.compare(req.body.code, codes[i])) { bk = i; break; }
+    }
     if (bk<0) return res.status(400).json({ error:t('auth.2fa.invalid') });
     user.twoFABackupCodes.splice(bk,1);
   }
@@ -1957,7 +1842,6 @@ router.delete('/auth/2fa', auth, [body('code').notEmpty()], validate, asyncH(asy
   res.json({ enabled:false, disabled:true });
 }));
 
-// ── POST /auth/login/2fa — complete 2FA login with tempToken ──────────────────
 router.post('/auth/login/2fa', [
   body('tempToken').notEmpty(),
   body('code').notEmpty(),
@@ -1975,7 +1859,11 @@ router.post('/auth/login/2fa', [
     valid = speakeasy.totp.verify({ secret, encoding:'base32', token:code, window:2 });
   } catch {}
   if (!valid) {
-    const bk = (user.twoFABackupCodes||[]).findIndex(c=>c===code);
+    let bk = -1;
+    const codes = user.twoFABackupCodes || [];
+    for (let i = 0; i < codes.length; i++) {
+      if (await bcrypt.compare(code, codes[i])) { bk = i; break; }
+    }
     if (bk<0) return res.status(401).json({ error:t('auth.2fa.invalid') });
     user.twoFABackupCodes.splice(bk,1);
   }
@@ -1989,49 +1877,53 @@ router.post('/auth/login/2fa', [
   res.json({ user:safe, token:access });
 }));
 
-// ══ SUBSCRIPTION ══════════════════════════════════════════════════════════════
-
 router.get('/subscription', auth, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id);
-  const activePlan = getActivePlan(user); // for active EA: {id:'pro', escrowFeePercent:0, ...}
+  const activePlan = getActivePlan(user);
   const history = await Subscription.find({ userId:req.user._id }).sort({ createdAt:-1 }).limit(10).lean();
+  const isFM = isFoundingMemberActive(user);
+  const fmExpiry = getFoundingMemberExpiry(user);
   res.json({
-    activePlan,
-    planExpiresAt: user.planExpiresAt,
-    plans: PLANS,
+    activePlan, planExpiresAt:user.planExpiresAt,
+    activePlanDbId: user.activePlan || 'free',
+    plans: isFM ? LEGACY_PLANS : PLANS,
+    allPlans: PLANS,
+    legacyPlans: LEGACY_PLANS,
     history,
-    // EA fields — definitive source for frontend logic
-    isEarlyAdopter: user.isEarlyAdopter || false,
-    isEarlyAdopterActive: isEarlyAdopterActive(user),
-    eaDaysRemaining: eaDaysRemaining(user),
+    isFoundingMember: isFM,
+    foundingMemberRank: user.earlyAdopterNumber || null,
+    foundingMemberExpiresAt: fmExpiry,
+    hidePaidPlans: isFM,
   });
 }));
 
-// Alias — frontend calls /subscription/me
 router.get('/subscription/me', auth, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id);
   const activePlan = getActivePlan(user);
   const history = await Subscription.find({ userId:req.user._id }).sort({ createdAt:-1 }).limit(10).lean();
+  const isFM = isFoundingMemberActive(user);
+  const fmExpiry = getFoundingMemberExpiry(user);
   res.json({
-    activePlan,
-    planExpiresAt: user.planExpiresAt,
-    plans: PLANS,
+    activePlan, planExpiresAt:user.planExpiresAt,
+    activePlanDbId: user.activePlan || 'free',
+    plans: isFM ? LEGACY_PLANS : PLANS,
+    allPlans: PLANS,
+    legacyPlans: LEGACY_PLANS,
     history,
-    isEarlyAdopter: user.isEarlyAdopter || false,
-    isEarlyAdopterActive: isEarlyAdopterActive(user),
-    eaDaysRemaining: eaDaysRemaining(user),
+    isFoundingMember: isFM,
+    foundingMemberRank: user.earlyAdopterNumber || null,
+    foundingMemberExpiresAt: fmExpiry,
+    hidePaidPlans: isFM,
   });
 }));
 
-router.post('/subscription/upgrade', auth, [body('planId').isIn(['basic','pro'])], validate, asyncH(async (req,res) => {
+router.post('/subscription/upgrade', auth, [body('planId').isIn(['basic','pro','legacy_basic','legacy_pro'])], validate, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id);
   const currentPlan = getActivePlan(user);
   const newPlanId = req.body.planId || req.body.plan;
-  const newPlan = PLANS[newPlanId];
+  const newPlan = PLANS[newPlanId] || LEGACY_PLANS[newPlanId];
   if (!newPlan) return res.status(400).json({ error:'Invalid plan' });
 
-  // Downgrade: apply after current billing cycle (queue it)
-  // For now: immediate upgrade, downgrade handled by expiry + not renewing
   if (newPlan.costNGN < currentPlan.costNGN && user.activePlan !== 'free') {
     return res.status(400).json({ error:'Downgrades apply after current billing cycle ends. Current plan will expire naturally.' });
   }
@@ -2040,23 +1932,14 @@ router.post('/subscription/upgrade', auth, [body('planId').isIn(['basic','pro'])
   res.json({ ok:true, subscription:sub, newPlan });
 }));
 
-// Alias — frontend uses /subscription/purchase
-router.post('/subscription/purchase', auth, [
-  body('plan').optional().isIn(ALL_PLAN_IDS),
-  body('planId').optional().isIn(ALL_PLAN_IDS),
-], validate, asyncH(async (req,res) => {
+router.post('/subscription/purchase', auth, [body('plan').optional().isIn(['basic','pro','legacy_basic','legacy_pro']), body('planId').optional().isIn(['basic','pro','legacy_basic','legacy_pro'])], validate, asyncH(async (req,res) => {
   const newPlanId = req.body.planId || req.body.plan;
-  const planObj = PLANS[newPlanId] || LEGACY_PLANS[newPlanId];
-  if (!newPlanId || !planObj) return res.status(400).json({ error:'Invalid plan' });
-  // Legacy plans are exclusive to Founding Members (first 200 users)
-  if (LEGACY_PLANS[newPlanId] && !req.user.isEarlyAdopter) {
-    return res.status(403).json({ error:'Legacy plans are exclusive to Founding Members (first 200 users)' });
-  }
-  const sub = await purchaseSubscription(req.user._id, newPlanId);
-  res.json({ ok:true, subscription:sub, newPlan:planObj });
+  if (!newPlanId || (!PLANS[newPlanId] && !LEGACY_PLANS[newPlanId])) return res.status(400).json({ error:'Invalid plan' });
+  const user = await User.findById(req.user._id);
+  const sub = await purchaseSubscription(user._id, newPlanId);
+  res.json({ ok:true, subscription:sub, newPlan:PLANS[newPlanId] || LEGACY_PLANS[newPlanId] });
 }));
 
-// POST /subscription/gift — purchase a subscription for another user
 router.post('/subscription/gift', auth, [
   body('planId').isIn(['basic','pro']),
   body('recipientId').isMongoId(),
@@ -2077,10 +1960,10 @@ router.post('/subscription/gift', auth, [
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
-      // Deduct from giver
+
       await walletMove({ session, userId:giver._id, fromBucket:'available', toBucket:'external',
         amount:plan.costNGN, type:'gift_subscription', note:`Gifted ${plan.name} plan to ${recipient.username}` });
-      // Grant to recipient
+
       await giftSubscription({ session, userId:recipientId, planId, durationDays:30, giftedBy:`user:${giver._id}` });
     });
     sendNotification({
@@ -2095,13 +1978,14 @@ router.post('/subscription/gift', auth, [
 
 router.post('/subscription/cancel', auth, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id);
+  if (isFoundingMemberActive(user) && user.activePlan === 'free') {
+    return res.status(400).json({ error:'Founding Members enjoy zero-fee access for 180 days — no subscription to cancel. Lock in a Legacy plan to continue benefits after your perk period.' });
+  }
   if (user.activePlan === 'free') return res.status(400).json({ error:'Already on free plan' });
-  // Mark as cancelled — will revert to free at expiry via job
+
   await Subscription.findOneAndUpdate({ userId:user._id, status:'active' }, { status:'cancelled' });
   res.json({ ok:true, message:'Subscription cancelled. Access remains until current period ends.' });
 }));
-
-// ══ REFERRAL ══════════════════════════════════════════════════════════════════
 
 router.get('/referral/dashboard', auth, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id);
@@ -2112,7 +1996,7 @@ router.get('/referral/dashboard', auth, asyncH(async (req,res) => {
   const nextMilestone = REFERRAL_MILESTONES.find(m => m.count > user.referralCount);
   res.json({
     referralCode: user.referralCode,
-    referralLink: `https://rawflip.shop?ref=${user.referralCode}`,
+    referralLink: `${CLIENT_ORIGIN}?ref=${user.referralCode}`,
     referralCount: user.referralCount,
     referralEarnings: user.referralEarnings,
     earningsBalance: user.earningsBalance,
@@ -2128,12 +2012,28 @@ router.get('/referral/dashboard', auth, asyncH(async (req,res) => {
   });
 }));
 
-// ══ WALLET (with deposit/withdraw approval flow) ═══════════════════════════════
-
 router.get('/wallet', auth, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id);
   const activePlan = getActivePlan(user);
   const txs = await WalletTx.find({ user:req.user._id }).sort({ createdAt:-1 }).limit(20).lean();
+  const isFMActive = isFoundingMemberActive(user);
+  // Build escrow countdown timers for seller's pending escrow releases
+  const pendingEscrow = await Transaction.find({
+    sellerId: req.user._id,
+    state: { $in: [TX_STATES.DELIVERED, TX_STATES.RECEIVED_CONFIRMED] },
+    autoReleaseAt: { $ne: null },
+  }).select('itemTitle escrowAmount autoReleaseAt').lean();
+  const now = Date.now();
+  const escrowTimers = pendingEscrow.map(tx => {
+    const ms = tx.autoReleaseAt ? (new Date(tx.autoReleaseAt).getTime() - now) : 0;
+    return {
+      transactionId: tx._id,
+      itemTitle: tx.itemTitle || 'Escrow item',
+      escrowAmount: tx.escrowAmount || 0,
+      autoReleaseAt: tx.autoReleaseAt,
+      hoursRemaining: Math.max(0, Math.ceil(ms / 3600000)),
+    };
+  });
   res.json({
     availableBalance: user.availableBalance,
     reservedBalance:  user.reservedBalance,
@@ -2143,12 +2043,19 @@ router.get('/wallet', auth, asyncH(async (req,res) => {
     transactions: txs,
     rate: currencyConfig.rate,
     activePlan: activePlan.id,
-    planMinWithdrawal: activePlan.minWithdrawal,
+    planMinWithdrawal: isFMActive ? 0 : activePlan.minWithdrawal,
+    isFoundingMember: isFMActive,
+    foundingMemberRank: user.earlyAdopterNumber || null,
+    foundingMemberExpiresAt: getFoundingMemberExpiry(user),
+    feeNote: isFMActive
+      ? { standard: 'Standard fee: ₦100 per ₦5,000.', yourFee: 'Your Fee: ₦0 (Founding Member Perk!)', color: '#f0ad4e' }
+      : null,
+    escrowTimers,
   });
 }));
 
 router.get('/wallet/balance/:userId', auth, asyncH(async (req,res) => {
-  // Only admin or self
+
   const isSelf = req.params.userId === req.user._id.toString();
   if (!isSelf && req.user.role !== 'admin') return res.status(403).json({ error:t('forbidden') });
   const user = await User.findById(req.params.userId).select('availableBalance reservedBalance escrowBalance withdrawableBalance earningsBalance');
@@ -2156,17 +2063,16 @@ router.get('/wallet/balance/:userId', auth, asyncH(async (req,res) => {
   res.json(user);
 }));
 
-// POST /wallet/deposit/request
 router.post('/wallet/deposit/request', auth, requireAgreements, uploadProof.single('proof'), [
-  body('amount').isFloat({ min:MIN_DEPOSIT }).withMessage(`Minimum deposit is ₦${MIN_DEPOSIT.toLocaleString()}`),
+  body('amount').isFloat({ min:1 }).withMessage('Enter a valid deposit amount'),
   body('paymentMethod').optional().trim(),
   body('bankRef').optional().trim().isLength({ max:100 }),
 ], validate, asyncH(async (req,res) => {
   const amount = parseFloat(req.body.amount);
-  if (amount < MIN_DEPOSIT) return res.status(400).json({ error:`Minimum deposit is ₦${MIN_DEPOSIT.toLocaleString()}` });
+  if (amount < 1) return res.status(400).json({ error:'Enter a valid deposit amount' });
 
-  const fullUser = await User.findById(req.user._id).select('isEarlyAdopter earlyAdopterGrantedAt').lean();
-  const fee     = calcBlockFee(amount, fullUser);
+  const user = await User.findById(req.user._id);
+  const fee     = calculateDepositFee(amount, user);
   const netAmount = amount - fee;
   const proofImageUrl = req.file ? `/uploads/${req.file.filename}` : null;
 
@@ -2185,21 +2091,18 @@ router.post('/wallet/deposit/request', auth, requireAgreements, uploadProof.sing
     paymentDetails: { method: req.body.paymentMethod || 'bank_transfer', bankRef: req.body.bankRef || '' },
   });
 
-  // Record disclaimer acknowledgment (peer-to-peer / not insured) — enforced at deposit, not registration
   if (req.body.agreeAbout === true || req.body.agreeAbout === 'true') {
     await User.updateOne({ _id: req.user._id }, {
       $set: { about_understood: true, about_understood_at: new Date() }
     });
   }
 
-  // Notify admin via web
   const admins = await User.find({ role:'admin', isActive:true }).select('_id');
   admins.forEach(a => {
     sendNotification({ recipient:a._id, type:'system', title:'New Deposit Request', message:`${req.user.username} requested ₦${amount.toLocaleString()} deposit`, link:'/admin' }).catch(()=>{});
     io.to(`user:${a._id}`).emit('admin:deposit_request', { walletTxId:walletTx._id, userId:req.user._id, username:req.user.username, amount, fee, netAmount });
   });
 
-  // Notify Telegram admin
   telegramNotifyAdmin(`💰 New Deposit Request\nUser: @${req.user.username}\nAmount: ₦${amount.toLocaleString()}\nFee: ₦${fee.toLocaleString()}\nNet: ₦${netAmount.toLocaleString()}\nTx ID: ${walletTx._id}\n\nApprove: /approve ${walletTx._id}\nReject: /reject ${walletTx._id}`);
 
   res.status(201).json({
@@ -2217,7 +2120,6 @@ router.post('/wallet/deposit/request', auth, requireAgreements, uploadProof.sing
   });
 }));
 
-// POST /wallet/deposit/:txId/proof — upload proof for existing deposit request
 router.post('/wallet/deposit/:txId/proof', auth, uploadProof.single('proof'), [param('txId').isMongoId()], validate, asyncH(async (req,res) => {
   const wtx = await WalletTx.findOne({ _id:req.params.txId, user:req.user._id, type:'deposit' });
   if (!wtx) return res.status(404).json({ error:'Transaction not found' });
@@ -2232,10 +2134,9 @@ router.post('/wallet/deposit/:txId/proof', auth, uploadProof.single('proof'), [p
   res.json({ ok:true, status:wtx.status });
 }));
 
-// POST /wallet/withdraw/request
 router.post('/wallet/withdraw/request', auth, requireAgreements, requireKYC, [
   body('amount').isFloat({ min:1 }),
-  // Accept bank details flat OR nested inside paymentDetails (frontend sends nested)
+
   body('bankName').optional().trim(),
   body('accountNumber').optional().trim(),
   body('accountName').optional().trim(),
@@ -2244,7 +2145,7 @@ router.post('/wallet/withdraw/request', auth, requireAgreements, requireKYC, [
   body('paymentDetails.accountName').optional().trim(),
 ], validate, asyncH(async (req,res) => {
   const amount = parseFloat(req.body.amount);
-  // Support both flat and nested paymentDetails from frontend
+
   const pd = req.body.paymentDetails || {};
   if (!req.body.bankName && pd.bankName) req.body.bankName = pd.bankName;
   if (!req.body.accountNumber && pd.accountNumber) req.body.accountNumber = pd.accountNumber;
@@ -2255,8 +2156,7 @@ router.post('/wallet/withdraw/request', auth, requireAgreements, requireKYC, [
   const user = await User.findById(req.user._id);
   const plan = getActivePlan(user);
 
-  // Early adopters have no minimum withdrawal restriction for 6 months
-  if (!isEarlyAdopterActive(user)) {
+  if (!isFoundingMemberActive(user) && !isEarlyAdopterActive(user)) {
     if (plan.minWithdrawal > 0 && amount < plan.minWithdrawal)
       return res.status(400).json({ error:`Minimum withdrawal for your ${plan.name} plan is ₦${plan.minWithdrawal.toLocaleString()}` });
     if (amount < MIN_WITHDRAWAL && plan.minWithdrawal >= MIN_WITHDRAWAL)
@@ -2268,7 +2168,7 @@ router.post('/wallet/withdraw/request', auth, requireAgreements, requireKYC, [
     return res.status(400).json({ error:`Insufficient withdrawable balance. Available: ₦${totalAvailable.toLocaleString()}` });
   }
 
-  const fee = calcBlockFee(amount, user);   // user already fetched above
+  const fee = calculateWithdrawalFee(amount, user);
   const netAmount = amount - fee;
 
   const paymentDetails = {
@@ -2277,12 +2177,11 @@ router.post('/wallet/withdraw/request', auth, requireAgreements, requireKYC, [
     accountName: req.body.accountName,
   };
 
-  // Pre-deduct from balance atomically (hold funds while pending)
   const session = await mongoose.startSession();
   let wtx;
   try {
     await session.withTransaction(async () => {
-      // Deduct withdrawable first, then earnings
+
       let remaining = amount;
       const freshUser = await User.findById(user._id).session(session);
       const fromWithdrawable = Math.min(freshUser.withdrawableBalance, remaining);
@@ -2316,7 +2215,6 @@ router.post('/wallet/withdraw/request', auth, requireAgreements, requireKYC, [
   } finally { await session.endSession(); }
 }));
 
-// GET /wallet/transactions — list user's deposit/withdraw requests
 router.get('/wallet/transactions', auth, asyncH(async (req,res) => {
   const { skip,limit,page } = paginate(req);
   const filter = { user:req.user._id };
@@ -2329,9 +2227,6 @@ router.get('/wallet/transactions', auth, asyncH(async (req,res) => {
   res.json({ transactions:txs, total, page, pages:Math.ceil(total/limit) });
 }));
 
-// ══ ADMIN WALLET APPROVAL ═════════════════════════════════════════════════════
-
-// POST /admin/wallet-tx/:id/approve
 router.post('/admin/wallet-tx/:id/approve', auth, adminOnly, [
   param('id').isMongoId(),
   body('note').optional().trim().isLength({ max:500 }),
@@ -2345,14 +2240,14 @@ router.post('/admin/wallet-tx/:id/approve', auth, adminOnly, [
   if (wtx.status !== WALLET_TX_STATES.PENDING && wtx.type === 'withdrawal') {
     return res.status(400).json({ error:`Cannot approve withdrawal with status: ${wtx.status}` });
   }
-  // Prevent double approval
+
   if (wtx.adminActionAt) return res.status(409).json({ error:'This transaction has already been actioned' });
 
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
       if (wtx.type === 'deposit') {
-        // Credit netAmount to available balance atomically
+
         await User.findByIdAndUpdate(wtx.user._id, { $inc:{ availableBalance:wtx.netAmount } }, { session });
         await WalletTx.findByIdAndUpdate(wtx._id, {
           status: WALLET_TX_STATES.APPROVED,
@@ -2361,7 +2256,7 @@ router.post('/admin/wallet-tx/:id/approve', auth, adminOnly, [
           adminActionAt: new Date(),
         }, { session });
       } else {
-        // Withdrawal: funds already deducted at request time — just mark approved
+
         await WalletTx.findByIdAndUpdate(wtx._id, {
           status: WALLET_TX_STATES.APPROVED,
           approvedBy: req.user._id,
@@ -2373,7 +2268,6 @@ router.post('/admin/wallet-tx/:id/approve', auth, adminOnly, [
       await logAdmin(req.user._id, `approve_${wtx.type}`, 'WalletTx', wtx._id.toString(), approveNote, { amount:wtx.amount, fee:wtx.fee, netAmount:wtx.netAmount, userId:wtx.user._id }, 'web');
     });
 
-    // Emit to user
     io.to(`user:${wtx.user._id}`).emit('wallet:tx_approved', { walletTxId:wtx._id, type:wtx.type, amount:wtx.amount, netAmount:wtx.netAmount });
     sendNotification({ recipient:wtx.user._id, type:'system', title:`${wtx.type==='deposit'?'Deposit':'Withdrawal'} Approved ✅`, message:`₦${wtx.netAmount.toLocaleString()} ${wtx.type==='deposit'?'credited to your wallet':'sent to your bank account'}`, link:'/wallet' }).catch(()=>{});
     if (wtx.type==='deposit') sendEmail(wtx.user.email, emailTemplates.depositApproved(wtx.user.username, wtx.amount, wtx.fee)).catch(()=>{});
@@ -2383,7 +2277,6 @@ router.post('/admin/wallet-tx/:id/approve', auth, adminOnly, [
   } finally { await session.endSession(); }
 }));
 
-// POST /admin/wallet-tx/:id/reject
 router.post('/admin/wallet-tx/:id/reject', auth, adminOnly, [
   param('id').isMongoId(),
   body('reason').trim().isLength({ min:5, max:500 }),
@@ -2400,7 +2293,7 @@ router.post('/admin/wallet-tx/:id/reject', auth, adminOnly, [
   try {
     await session.withTransaction(async () => {
       if (wtx.type === 'withdrawal') {
-        // Refund pre-deducted balance back to user
+
         await User.findByIdAndUpdate(wtx.user._id, { $inc:{ withdrawableBalance:wtx.amount } }, { session });
       }
       await WalletTx.findByIdAndUpdate(wtx._id, {
@@ -2421,9 +2314,6 @@ router.post('/admin/wallet-tx/:id/reject', auth, adminOnly, [
   } finally { await session.endSession(); }
 }));
 
-// GET /admin/wallet-tx — admin view all pending wallet transactions
-
-// GET /admin/deposits — pending deposits for admin review
 router.get('/admin/deposits', auth, adminOnly, asyncH(async (req,res) => {
   const { skip, limit, page } = paginate(req);
   const status = req.query.status || 'proof_submitted';
@@ -2452,25 +2342,21 @@ router.get('/admin/wallet-tx', auth, adminOnly, asyncH(async (req,res) => {
   res.json({ transactions:txs, total, page, pages:Math.ceil(total/limit) });
 }));
 
-// ══ SAVED SEARCHES ═══════════════════════════════════════════════════════════
-
 const savedSearchSchema = new mongoose.Schema({
   user:       { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true, index:true },
   name:       { type:String, required:true, trim:true, maxlength:100 },
   query:      { type:String, default:'', trim:true },
-  filters:    { type:mongoose.Schema.Types.Mixed, default:{} }, // category, condition, minPrice, maxPrice, etc.
+  filters:    { type:mongoose.Schema.Types.Mixed, default:{} },
   emailAlert: { type:Boolean, default:false },
   lastAlertAt:{ type:Date, default:null },
 }, { timestamps:true });
 const SavedSearch = mongoose.model('SavedSearch', savedSearchSchema);
 
-// GET /saved-searches
 router.get('/saved-searches', auth, asyncH(async (req,res) => {
   const searches = await SavedSearch.find({ user:req.user._id }).sort({ createdAt:-1 }).limit(20).lean();
   res.json({ searches });
 }));
 
-// POST /saved-searches
 router.post('/saved-searches', auth, [
   body('name').trim().isLength({ min:1, max:100 }),
   body('query').optional().trim(),
@@ -2489,19 +2375,15 @@ router.post('/saved-searches', auth, [
   res.status(201).json({ search:ss });
 }));
 
-// DELETE /saved-searches/:id
 router.delete('/saved-searches/:id', auth, [param('id').isMongoId()], validate, asyncH(async (req,res) => {
   const ss = await SavedSearch.findOneAndDelete({ _id:req.params.id, user:req.user._id });
   if (!ss) return res.status(404).json({ error:'Not found' });
   res.json({ ok:true });
 }));
 
-// ══ LISTINGS ═════════════════════════════════════════════════════════════════
-
-// Middleware: enforce plan listing limit
 const enforcePlanListingLimit = asyncH(async (req,res,next) => {
   const user = await User.findById(req.user._id);
-  if (isEarlyAdopterActive(user)) return next(); // early adopters: unlimited listings
+  if (isFoundingMemberActive(user) || isEarlyAdopterActive(user)) return next();
   const plan = getActivePlan(user);
   if (plan.listingLimit === Infinity) return next();
   const count = await Listing.countDocuments({ seller:user._id, status:'active' });
@@ -2519,7 +2401,6 @@ const enforcePlanListingLimit = asyncH(async (req,res,next) => {
 router.get('/listings', asyncH(async (req,res) => {
   const { skip,limit,page } = paginate(req);
 
-  // ── Base filter on the listing document itself ─────────────────────────────
   const filter = { status:'active' };
   if (req.query.category)   filter.category  = req.query.category;
   if (req.query.condition)  filter.condition  = req.query.condition;
@@ -2529,14 +2410,12 @@ router.get('/listings', asyncH(async (req,res) => {
   if (req.query.negotiable==='true') filter.negotiable = true;
   if (req.query.q)          filter.$text = { $search:req.query.q };
 
-  // Location filter: find matching sellers first, then restrict by their IDs
   if (req.query.city) {
     const cityRe = new RegExp(req.query.city.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i');
     const sellersInCity = await User.find({ location:cityRe, isActive:true }).select('_id').lean();
     filter.seller = { $in: sellersInCity.map(u=>u._id) };
   }
 
-  // Multiple conditions filter (comma-separated)
   if (req.query.conditions) {
     const conds = req.query.conditions.split(',').filter(c=>['new','like_new','good','fair','poor'].includes(c));
     if (conds.length) filter.condition = { $in:conds };
@@ -2545,10 +2424,8 @@ router.get('/listings', asyncH(async (req,res) => {
   const sortMap = { newest:{createdAt:-1}, oldest:{createdAt:1}, price_asc:{price:1}, price_desc:{price:-1}, popular:{views:-1}, priority:{searchPriority:-1,createdAt:-1} };
   const sort = sortMap[req.query.sort] || { searchPriority:-1, createdAt:-1 };
 
-  // ── Aggregation pipeline: filter by listing, join seller, require seller.isActive ──
   const sellerActiveFilter = { 'seller.isActive': true };
 
-  // Build the pipeline stages shared by both the data query and the count query
   const basePipeline = [
     { $match: filter },
     { $lookup: {
@@ -2559,23 +2436,23 @@ router.get('/listings', asyncH(async (req,res) => {
         pipeline: [{ $project: { username:1, avatar:1, rating:1, reviewCount:1, isVerified:1, location:1, activePlan:1, isActive:1 } }],
     }},
     { $unwind: '$seller' },
-    { $match: sellerActiveFilter },  // exclude listings from suspended users
+    { $match: sellerActiveFilter },
   ];
 
   const [results, countResult, facets] = await Promise.all([
-    // Data: apply sort + pagination after seller filter
+
     Listing.aggregate([
       ...basePipeline,
       { $sort: sort },
       { $skip: skip },
       { $limit: limit },
     ]),
-    // Total count with seller filter applied
+
     Listing.aggregate([
       ...basePipeline,
       { $count: 'total' },
     ]),
-    // Facets: also filter to active sellers
+
     req.query.facets !== 'false' ? Listing.aggregate([
       ...basePipeline,
       { $facet: {
@@ -2599,24 +2476,23 @@ router.get('/listings', asyncH(async (req,res) => {
   });
 }));
 
-// PATCH /listings/bulk — bulk edit price/status for seller's own listings
 router.patch('/listings/bulk', auth, [
   body('ids').isArray({ min:1, max:50 }),
   body('ids.*').isMongoId(),
   body('updates').isObject(),
 ], validate, asyncH(async (req,res) => {
   const { ids, updates } = req.body;
-  // Only allow safe fields to be bulk-updated
+
   const allowed = ['price','status','negotiable','shipping','shippingCost','tags'];
   const safeUpdates = {};
   allowed.forEach(k => { if (updates[k] !== undefined) safeUpdates[k] = updates[k]; });
   if (!Object.keys(safeUpdates).length)
     return res.status(400).json({ error:'No valid fields to update' });
-  // Status can only be archived/active for bulk ops
+
   if (safeUpdates.status && !['active','archived'].includes(safeUpdates.status))
     return res.status(400).json({ error:'Bulk status can only be active or archived' });
   const result = await Listing.updateMany(
-    { _id:{ $in:ids }, seller:req.user._id }, // seller guard: own listings only
+    { _id:{ $in:ids }, seller:req.user._id },
     { $set:safeUpdates }
   );
   res.json({ ok:true, matched:result.matchedCount, modified:result.modifiedCount });
@@ -2627,9 +2503,9 @@ router.get('/listings/:id', asyncH(async (req,res) => {
   const l = await Listing.findByIdAndUpdate(req.params.id, { $inc:{ views:1 } }, { new:true })
     .populate('seller','username avatar rating reviewCount isVerified location activePlan planExpiresAt');
   if (!l||l.status==='archived') return res.status(404).json({ error:t('not_found') });
-  // Hide listings from suspended sellers
+
   if (l.seller && l.seller.isActive === false) return res.status(404).json({ error:t('not_found') });
-  // Only expose seller contactPhone to authenticated users who have a confirmed purchase
+
   let exposePhone = false;
   if (req.headers.authorization || req.cookies?.refreshToken) {
     try {
@@ -2647,7 +2523,7 @@ router.get('/listings/:id', asyncH(async (req,res) => {
     } catch(_) {}
   }
   const lObj = l.toObject();
-  if (!exposePhone) delete lObj.contactPhone; // phone hidden until buyer purchases
+  if (!exposePhone) delete lObj.contactPhone;
   res.json({ ...lObj, usdPrice:convertNGNtoUSD(l.price), rate:currencyConfig.rate, phoneUnlocked:exposePhone });
 }));
 
@@ -2660,7 +2536,7 @@ router.post('/listings', auth, upload.array('images',8), enforcePlanListingLimit
 ], validate, asyncH(async (req,res) => {
   const user = await User.findById(req.user._id);
   const plan = getActivePlan(user);
-  const searchPriority = plan.id==='pro'?2:plan.id==='basic'?1:0;
+  const searchPriority = (plan.id==='pro'||plan.id==='founding_member'||plan.id==='legacy_pro')?2:plan.id==='basic'||plan.id==='legacy_basic'?1:0;
 
   const l = await Listing.create({
     seller: req.user._id,
@@ -2684,7 +2560,7 @@ router.put('/listings/:id', auth, upload.array('images',8), [param('id').isMongo
   if (!l.seller.equals(req.user._id) && req.user.role!=='admin') return res.status(403).json({ error:t('forbidden') });
   const user = await User.findById(l.seller);
   const plan = getActivePlan(user);
-  const searchPriority = plan.id==='pro'?2:plan.id==='basic'?1:0;
+  const searchPriority = (plan.id==='pro'||plan.id==='founding_member'||plan.id==='legacy_pro')?2:plan.id==='basic'||plan.id==='legacy_basic'?1:0;
   const allowed = ['title','description','price','category','condition','location','tags','negotiable','shipping','shippingCost','contactPhone'];
   allowed.forEach(f=>{ if(req.body[f]!==undefined) l[f]=req.body[f]; });
   if (req.body.tags) l.tags=req.body.tags.split(',').map(t=>t.trim()).filter(Boolean).slice(0,10);
@@ -2734,8 +2610,6 @@ router.get('/listings/:id/similar', asyncH(async (req,res) => {
   res.json({ listings:similar.map(s=>({ ...s, usdPrice:convertNGNtoUSD(s.price) })) });
 }));
 
-// ══ OFFERS ═══════════════════════════════════════════════════════════════════
-
 router.post('/offers', auth, requireAgreements, [
   body('listingId').isMongoId(),
   body('amount').isFloat({ min:1 }),
@@ -2753,12 +2627,11 @@ router.post('/offers', auth, requireAgreements, [
       const user = await User.findById(req.user._id).session(session);
       if (user.availableBalance < amount) throw new Error(`Insufficient balance. Need ₦${amount.toLocaleString()}, have ₦${user.availableBalance.toLocaleString()}`);
 
-      // Pre-create transaction in PENDING_OFFER state
       const now=new Date();
       tx = await Transaction.create([{
         buyerId:req.user._id, sellerId:listing.seller._id, itemId:listing._id,
         itemTitle:listing.title, amount, escrowAmount:0,
-        escrowFeePercent:0,  // will be set on accept
+        escrowFeePercent:0,
         exchangeRateUsed:currencyConfig.rate, state:TX_STATES.PENDING_OFFER,
         'timestamps_state.PENDING_OFFER':now,
         dispatchDeadlineAt: new Date(now.getTime() + DISPATCH_WINDOW_DAYS*86400000),
@@ -2774,7 +2647,6 @@ router.post('/offers', auth, requireAgreements, [
       offer = offer[0];
       await Transaction.findByIdAndUpdate(tx._id,{ offerId:offer._id },{ session });
 
-      // Reserve funds
       await walletMove({ session, userId:req.user._id, fromBucket:'available', toBucket:'reserved', amount, type:'reserve', note:`Offer on "${listing.title}"`, transactionId:tx._id });
     });
 
@@ -2784,7 +2656,6 @@ router.post('/offers', auth, requireAgreements, [
   } finally { await session.endSession(); }
 }));
 
-// GET /offers/me — alias used by frontend (returns {received, sent})
 router.get('/offers/me', auth, asyncH(async (req,res) => {
   const uid = req.user._id;
   const [received, sent] = await Promise.all([
@@ -2834,7 +2705,7 @@ router.put('/offers/:id/accept-counter', auth, [param('id').isMongoId()], valida
     await session.withTransaction(async () => {
       const user=await User.findById(req.user._id).session(session);
       if (user.availableBalance < counterAmount - offer.amount) throw new Error('Insufficient balance for counter amount');
-      // Adjust reservation: unreserve old amount, reserve new amount
+
       if (counterAmount !== offer.amount) {
         await walletMove({ session, userId:req.user._id, fromBucket:'reserved', toBucket:'available', amount:offer.amount, type:'unreserve', note:'Returning original reserved amount for counter acceptance' });
         await walletMove({ session, userId:req.user._id, fromBucket:'available', toBucket:'reserved', amount:counterAmount, type:'reserve', note:`Reserving counter amount ₦${counterAmount.toLocaleString()}` });
@@ -2850,7 +2721,6 @@ router.put('/offers/:id/accept-counter', auth, [param('id').isMongoId()], valida
   } finally { await session.endSession(); }
 }));
 
-// Withdraw offer (buyer cancels their own pending/countered offer)
 router.put('/offers/:id/withdraw', auth, [param('id').isMongoId()], validate, asyncH(async (req,res) => {
   const offer=await Offer.findById(req.params.id);
   if (!offer) return res.status(404).json({ error:t('not_found') });
@@ -2860,7 +2730,7 @@ router.put('/offers/:id/withdraw', auth, [param('id').isMongoId()], validate, as
   try {
     await session.withTransaction(async () => {
       offer.status='withdrawn'; offer.respondedAt=new Date(); await offer.save({ session });
-      // Unreserve buyer funds back to available
+
       await walletMove({ session, userId:offer.buyer, fromBucket:'reserved', toBucket:'available', amount:offer.amount, type:'unreserve', note:'Offer withdrawn by buyer', transactionId:offer.transactionId });
       if (offer.transactionId) {
         await Transaction.findByIdAndUpdate(offer.transactionId, { state:TX_STATES.CANCELLED, 'timestamps_state.CANCELLED':new Date() }, { session });
@@ -2895,7 +2765,7 @@ router.put('/offers/:id/accept', auth, [param('id').isMongoId()], validate, asyn
   if (!offer) return res.status(404).json({ error:t('not_found') });
   if (!offer.seller._id.equals(req.user._id)) return res.status(403).json({ error:'Only seller can accept' });
   if (!['pending','countered'].includes(offer.status)) return res.status(400).json({ error:'Cannot accept' });
-  // Fetch listing for title reference (this was the 'listing is not defined' bug)
+
   const listing = await Listing.findById(offer.listing).lean();
 
   const session=await mongoose.startSession();
@@ -2904,11 +2774,9 @@ router.put('/offers/:id/accept', auth, [param('id').isMongoId()], validate, asyn
     await session.withTransaction(async () => {
       const seller=await User.findById(offer.seller._id).session(session);
       const plan=getActivePlan(seller);
-      // escrowFeePercent determined by seller's active plan (EA=0%, Legacy=12%/7.5%, etc.)
-      const sellerActivePlan = getActivePlan(seller);
-      const escrowFeePercent = sellerActivePlan.escrowFeePercent;
-      offer.status='accepted'; offer.respondedAt=new Date(); await offer.save({ session });
-      // reserved → escrow
+
+      const escrowFeePercent = isFoundingMemberActive(seller) ? 0 : plan.escrowFeePercent;
+
       await walletMove({ session, userId:offer.buyer._id, fromBucket:'reserved', toBucket:'escrow', amount:offer.amount, type:'escrow_fund', note:`Escrow for "${listing ? listing.title : 'item'}"`, transactionId:offer.transactionId });
       const now=new Date();
       const dispatchDeadline=new Date(now.getTime()+DISPATCH_WINDOW_DAYS*86400000);
@@ -2928,12 +2796,10 @@ router.put('/offers/:id/accept', auth, [param('id').isMongoId()], validate, asyn
     io.to(`user:${offer.buyer._id}`).emit('transaction:updated',tx);
     io.to(`user:${offer.seller._id}`).emit('transaction:updated',tx);
 
-
     res.json({ offer, transaction:tx });
   } finally { await session.endSession(); }
 }));
 
-// Purchase now (direct buy — no offer negotiation)
 router.post('/listings/:id/purchase', auth, requireAgreements, [param('id').isMongoId()], validate, asyncH(async (req,res) => {
   const listing=await Listing.findById(req.params.id).populate('seller','username email activePlan planExpiresAt');
   if (!listing||listing.status!=='active') return res.status(404).json({ error:'Listing not available' });
@@ -2942,10 +2808,9 @@ router.post('/listings/:id/purchase', auth, requireAgreements, [param('id').isMo
   const amount=listing.price;
   const seller=await User.findById(listing.seller._id);
   const plan=getActivePlan(seller);
-  // escrowFeePercent determined by seller's active plan (EA=0%, Legacy=12%/7.5%, etc.)
-  const sellerActivePlan = getActivePlan(seller);
-  const escrowFeePercent = sellerActivePlan.escrowFeePercent;
-  const escrowFeeAmount=Math.round(amount*escrowFeePercent/100);
+
+  const escrowFeePercent = isFoundingMemberActive(seller) ? 0 : plan.escrowFeePercent;
+  const escrowFeeAmount  = Math.round(amount * escrowFeePercent / 100);
 
   const session=await mongoose.startSession();
   let tx;
@@ -2954,7 +2819,6 @@ router.post('/listings/:id/purchase', auth, requireAgreements, [param('id').isMo
       const buyer=await User.findById(req.user._id).session(session);
       if (buyer.availableBalance < amount) throw new Error(`Insufficient balance. Need ₦${amount.toLocaleString()}`);
 
-      // Check if buyer is a referee getting first-purchase discount
       const referral = await Referral.findOne({ refereeId:buyer._id, firstPurchaseRewardPaid:false }).session(session);
       const refereeDiscount = (!buyer.firstPurchaseDone && referral) ? Math.round(escrowFeeAmount * REFERRAL_REWARDS.referee_first_purchase_discount) : 0;
 
@@ -2975,7 +2839,6 @@ router.post('/listings/:id/purchase', auth, requireAgreements, [param('id').isMo
       await Listing.findByIdAndUpdate(listing._id,{ status:'pending' },{ session });
     });
 
-    // Process first-purchase referral reward
     processReferralFirstPurchase(await User.findById(req.user._id), tx._id).catch(()=>{});
 
     sendEmail(listing.seller.email, emailTemplates.newOrderReceived(listing.seller.username, tx, listing.title)).catch(()=>{});
@@ -2984,8 +2847,6 @@ router.post('/listings/:id/purchase', auth, requireAgreements, [param('id').isMo
     res.status(201).json({ transaction:tx });
   } finally { await session.endSession(); }
 }));
-
-// ══ TRANSACTIONS ═════════════════════════════════════════════════════════════
 
 router.get('/transactions', auth, asyncH(async (req,res) => {
   const uid=req.user._id;
@@ -2996,7 +2857,7 @@ router.get('/transactions', auth, asyncH(async (req,res) => {
     Transaction.find(filter).populate('buyerId','username avatar').populate('sellerId','username avatar').populate('itemId','title images price').sort({ createdAt:-1 }).skip(skip).limit(limit).lean(),
     Transaction.countDocuments(filter),
   ]);
-  // Count seller's ESCROW_FUNDED transactions that need dispatch action (for banner)
+
   const sellerAlertCount = await Transaction.countDocuments({ sellerId:uid, state:'ESCROW_FUNDED' });
   res.json({ transactions:transactions.map(tx=>({ ...tx, usdAmount:convertNGNtoUSD(tx.amount) })), total, page, pages:Math.ceil(total/limit), rate:currencyConfig.rate, sellerAlertCount });
 }));
@@ -3015,8 +2876,6 @@ router.get('/transactions/:id', auth, [param('id').isMongoId()], validate, async
   res.json({ ...tx, usdAmount:convertNGNtoUSD(tx.amount), rate:currencyConfig.rate });
 }));
 
-// GET /transactions/:id/contact — symmetric endpoint for buyer AND seller
-// Returns the OTHER party's contact details (phone, WhatsApp) after escrow is funded
 router.get('/transactions/:id/contact', auth, [param('id').isMongoId()], validate, asyncH(async (req,res) => {
   const tx = await Transaction.findById(req.params.id)
     .populate('buyerId',  'username avatar phone whatsapp lastSeen')
@@ -3033,20 +2892,16 @@ router.get('/transactions/:id/contact', auth, [param('id').isMongoId()], validat
   const ALLOWED_STATES = ['ESCROW_FUNDED','SHIPPED','DELIVERED','RECEIVED_CONFIRMED','DISPUTED'];
   if (!ALLOWED_STATES.includes(tx.state)) return res.status(403).json({ error: 'Contact details only available once payment is in escrow' });
 
-  // Fetch listing to get contactPhone (seller sets this per-listing, NOT on User profile)
   const listing = tx.itemId ? await Listing.findById(tx.itemId).select('contactPhone').lean() : null;
   const listingPhone = listing?.contactPhone || null;
 
   const sellerUser = tx.sellerId;
   const buyerUser  = tx.buyerId;
 
-  // Contact for the OTHER party
-  // For buyer viewing → show seller contact
-  // For seller viewing → show buyer contact
   const sellerContactPayload = {
     username: sellerUser?.username,
     avatar:   sellerUser?.avatar,
-    // Prefer listing contactPhone, fall back to User.phone
+
     phone:    listingPhone || sellerUser?.phone || null,
     whatsapp: listingPhone || sellerUser?.whatsapp || null,
     isOnline: !!userSockets?.has(String(sellerUser?._id)),
@@ -3065,7 +2920,6 @@ router.get('/transactions/:id/contact', auth, [param('id').isMongoId()], validat
   res.json({
     _id:          tx._id,
     itemTitle:    tx.itemTitle,
-    amount:       tx.amount,
     viewerRole:   isBuyer ? 'buyer' : 'seller',
     sellerContact: isBuyer  ? sellerContactPayload : undefined,
     buyerContact:  isSeller ? buyerContactPayload  : undefined,
@@ -3078,10 +2932,10 @@ router.get('/transactions/:id/contact', auth, [param('id').isMongoId()], validat
 router.post('/transactions/:id/dispatch', auth, upload.single('productPicture'), [
   param('id').isMongoId(),
   body('dispatchType').isIn(['international','local']),
-  // International
+
   body('trackingNumber').optional().trim().isLength({ max:100 }),
   body('shippingCarrier').optional().trim().isLength({ max:50 }),
-  // Local
+
   body('senderLocation').optional().trim().isLength({ max:200 }),
   body('transportType').optional().isIn(['bus','car','bike','van','truck']),
   body('sendTime').optional(),
@@ -3098,13 +2952,13 @@ router.post('/transactions/:id/dispatch', auth, upload.single('productPicture'),
   const now = new Date();
 
   if (dtype === 'international') {
-    // Validate required fields
+
     if (!req.body.shippingCarrier) return res.status(400).json({ error:'Shipping platform (carrier) is required for international dispatch' });
     if (!req.body.trackingNumber)  return res.status(400).json({ error:'Tracking number is required for international dispatch' });
     tx.shippingCarrier = req.body.shippingCarrier;
     tx.trackingNumber  = req.body.trackingNumber;
   } else {
-    // local
+
     if (!req.body.senderLocation)  return res.status(400).json({ error:'Sender location is required for local dispatch' });
     if (!req.body.transportType)   return res.status(400).json({ error:'Transportation type is required for local dispatch' });
     if (!req.body.sendTime)        return res.status(400).json({ error:'Send time is required for local dispatch' });
@@ -3164,16 +3018,16 @@ router.post('/transactions/:id/confirm', auth, [param('id').isMongoId()], valida
       const seller=await User.findById(tx.sellerId._id).session(session);
       const plan=getActivePlan(seller);
       const feePercent = tx.escrowFeePercent || plan.escrowFeePercent;
-      const fee = Math.round(tx.escrowAmount * feePercent / 100);
+      const fee = calculateEscrowFee(tx.escrowAmount, feePercent, seller);
       const sellerReceives = tx.escrowAmount - fee;
       const now=new Date();
       tx.state=TX_STATES.COMPLETED; tx.timestamps_state.COMPLETED=now; tx.reviewUnlocked=true;
       await tx.save({ session });
       closeConvForTx(tx._id, 'transaction_completed').catch(()=>{});
-      // Move escrow: deduct fee, credit seller withdrawable
-      await walletMove({ session, userId:tx.sellerId._id, fromBucket:'escrow', toBucket:'withdrawable', amount:sellerReceives, type:'escrow_release', note:`Payment released — fee: ₦${fee.toLocaleString()} (${feePercent}%)`, transactionId:tx._id, fee });
-      // Buyer's escrow bucket decremented (was funded by buyer)
-      await User.findByIdAndUpdate(tx.buyerId._id, { $inc:{ escrowBalance:-tx.escrowAmount } }, { session });
+
+      await walletMove({ session, userId:tx.buyerId._id, fromBucket:'escrow', toBucket:'external', amount:tx.escrowAmount, type:'escrow_release', note:`Escrow released to seller — fee: ₦${fee.toLocaleString()} (${feePercent}%)`, transactionId:tx._id });
+      await walletMove({ session, userId:tx.sellerId._id, fromBucket:'external', toBucket:'withdrawable', amount:sellerReceives, type:'escrow_release', note:`Payment received — fee: ₦${fee.toLocaleString()} (${feePercent}%)`, transactionId:tx._id, fee });
+
       await User.findByIdAndUpdate(tx.sellerId._id, { $inc:{ totalSales:1 } }, { session });
       await User.findByIdAndUpdate(tx.buyerId._id,  { $inc:{ totalPurchases:1 } }, { session });
       await Listing.findByIdAndUpdate(tx.itemId,{ status:'sold' },{ session });
@@ -3204,13 +3058,13 @@ router.post('/transactions/:id/cancel', auth, [param('id').isMongoId()], validat
   try {
     await session.withTransaction(async () => {
       const now=new Date();
+      const originalState=tx.state;
       tx.state=TX_STATES.CANCELLED; tx.timestamps_state.CANCELLED=now; await tx.save({ session });
       closeConvForTx(tx._id, 'transaction_cancelled').catch(()=>{});
       if (tx.escrowAmount>0) await walletMove({ session, userId:tx.buyerId, fromBucket:'escrow', toBucket:'available', amount:tx.escrowAmount, type:'escrow_refund', note:'Transaction cancelled', transactionId:tx._id });
-      else if (tx.state===TX_STATES.PENDING_OFFER||tx.state===TX_STATES.ACCEPTED) {
-        // Unreserve if only reserved (not in escrow yet)
+      else if (originalState===TX_STATES.PENDING_OFFER||originalState===TX_STATES.ACCEPTED) {
         const offer=await Offer.findById(tx.offerId).session(session);
-        if (offer&&offer.amount>0) await walletMove({ session, userId:tx.buyerId, fromBucket:'reserved', toBucket:'available', amount:offer.amount, type:'unreserve', note:'Offer cancelled' }).catch(()=>{});
+        if (offer&&offer.amount>0) await walletMove({ session, userId:tx.buyerId, fromBucket:'reserved', toBucket:'available', amount:offer.amount, type:'unreserve', note:'Offer cancelled', transactionId:tx._id });
       }
       await Listing.findByIdAndUpdate(tx.itemId,{ status:'active' },{ session });
       if (tx.offerId) await Offer.findByIdAndUpdate(tx.offerId,{ status:'rejected' },{ session });
@@ -3220,8 +3074,6 @@ router.post('/transactions/:id/cancel', auth, [param('id').isMongoId()], validat
     res.json(tx);
   } finally { await session.endSession(); }
 }));
-
-// ══ DISPUTES ═════════════════════════════════════════════════════════════════
 
 router.post('/disputes', auth, uploadEvidence.array('evidence',5), [
   body('transactionId').isMongoId(),
@@ -3284,9 +3136,6 @@ router.put('/disputes/:id/respond', auth, [param('id').isMongoId(), body('seller
   res.json(d);
 }));
 
-// ══ USER / PROFILE ═══════════════════════════════════════════════════════════
-
-// Export user's own data (GDPR-style)
 router.get('/users/me/export', auth, asyncH(async (req,res) => {
   const [user, listings, transactions, offers, reviews] = await Promise.all([
     User.findById(req.user._id)
@@ -3322,7 +3171,7 @@ router.get('/users/:id', asyncH(async (req,res) => {
 }));
 
 router.put('/users/me', auth, upload.single('avatar'), asyncH(async (req,res) => {
-  // Validate phone/whatsapp format if provided
+
   const phoneRe = /^\+234[0-9]{10}$/;
   if (req.body.phone && !phoneRe.test(req.body.phone)) {
     return res.status(400).json({ error:'Phone must be in +234XXXXXXXXXX format (11 digits after +234)' });
@@ -3330,7 +3179,7 @@ router.put('/users/me', auth, upload.single('avatar'), asyncH(async (req,res) =>
   if (req.body.whatsapp && !phoneRe.test(req.body.whatsapp)) {
     return res.status(400).json({ error:'WhatsApp must be in +234XXXXXXXXXX format (11 digits after +234)' });
   }
-  const allowed=['bio','location','phone','whatsapp']; // username intentionally excluded — locked after registration
+  const allowed=['bio','location','phone','whatsapp'];
   const updates={};
   allowed.forEach(f=>{ if(req.body[f]!==undefined)updates[f]=req.body[f]; });
   if (req.file) updates.avatar=`/uploads/${req.file.filename}`;
@@ -3354,8 +3203,6 @@ router.post('/users/:id/follow', auth, [param('id').isMongoId()], validate, asyn
   await target.save();
   res.json({ following:!isFollowing, followers:target.followers.length });
 }));
-
-// ══ POSTS ════════════════════════════════════════════════════════════════════
 
 router.get('/posts', asyncH(async (req,res) => {
   const { skip,limit,page }=paginate(req);
@@ -3402,7 +3249,6 @@ router.post('/posts/:id/like', auth, [param('id').isMongoId()], validate, asyncH
   await p.save(); res.json({ liked:i<0, likes:p.likes.length });
 }));
 
-// ── POST /posts/:id/comments ──────────────────────────────────────────────────
 router.post('/posts/:id/comments', auth, [
   param('id').isMongoId(),
   body('content').trim().isLength({ min:1, max:2000 }),
@@ -3416,7 +3262,6 @@ router.post('/posts/:id/comments', auth, [
   res.status(201).json(populated);
 }));
 
-// ── GET /posts/:id/comments ───────────────────────────────────────────────────
 router.get('/posts/:id/comments', [param('id').isMongoId()], validate, asyncH(async (req,res) => {
   const { skip,limit,page } = paginate(req);
   const [comments,total] = await Promise.all([
@@ -3425,8 +3270,6 @@ router.get('/posts/:id/comments', [param('id').isMongoId()], validate, asyncH(as
   ]);
   res.json({ comments, total, page, pages:Math.ceil(total/limit) });
 }));
-
-// ══ TASKS ════════════════════════════════════════════════════════════════════
 
 router.get('/tasks', auth, asyncH(async (req,res) => {
   const filter={ user:req.user._id };
@@ -3452,8 +3295,6 @@ router.delete('/tasks/:id', auth, [param('id').isMongoId()], validate, asyncH(as
   await Task.findOneAndDelete({ _id:req.params.id, user:req.user._id }); res.json({ ok:true });
 }));
 
-// ══ NOTIFICATIONS ════════════════════════════════════════════════════════════
-
 router.get('/notifications', auth, asyncH(async (req,res) => {
   const { skip,limit,page }=paginate(req);
   const [notifications,total,unread]=await Promise.all([
@@ -3474,8 +3315,6 @@ router.put('/notifications/read-all', auth, asyncH(async (req,res) => {
   res.json({ ok:true });
 }));
 
-
-// ── Check username availability (Fix 4) ──────────────────────
 router.get('/users/check-username', asyncH(async (req,res) => {
   const { username } = req.query;
   if (!username || username.length < 3) return res.status(400).json({ error: 'Username too short' });
@@ -3483,11 +3322,6 @@ router.get('/users/check-username', asyncH(async (req,res) => {
   res.json({ available: !exists });
 }));
 
-// ── Messages read-all (Fix 8) ─────────────────────────────────
-// POST /messages/conv/:convId/read — mark a specific conversation as read + return read timestamp
-
-
-// ── Session revoke (Fix 10) ───────────────────────────────────
 router.post('/auth/sessions/revoke', auth, asyncH(async (req,res) => {
   const { fingerprint } = req.body;
   if (!fingerprint) return res.status(400).json({ error: 'fingerprint required' });
@@ -3498,16 +3332,17 @@ router.post('/auth/sessions/revoke', auth, asyncH(async (req,res) => {
 router.post('/auth/sessions/revoke-all', auth, asyncH(async (req,res) => {
   const currentFp = fingerprintDevice(req);
   await User.findByIdAndUpdate(req.user._id, {
-    // Keep only current session fingerprint in history; clear other refresh tokens
     $set: { loginHistory: (await User.findById(req.user._id).select('loginHistory').lean())
       .loginHistory.filter(h => h.fingerprint === currentFp) }
   });
-  // Revoke all refresh tokens except current
-  await User.findByIdAndUpdate(req.user._id, { refreshTokens: [] });
+
+  // Keep only the current session's refresh token so this device stays logged in
+  const currentRefresh = req.cookies?.rf_refresh;
+  await User.findByIdAndUpdate(req.user._id, {
+    refreshTokens: currentRefresh ? [currentRefresh] : []
+  });
   res.json({ ok: true });
 }));
-
-// ══ REVIEWS ══════════════════════════════════════════════════════════════════
 
 router.post('/reviews', auth, [
   body('revieweeId').isMongoId(), body('rating').isInt({ min:1,max:5 }),
@@ -3536,26 +3371,11 @@ router.get('/reviews/:userId', asyncH(async (req,res) => {
   res.json(reviews);
 }));
 
-// ══ MESSAGES ═════════════════════════════════════════════════════════════════
-
-// Alias: frontend calls /messages/conversations
-
-// GET /messages/unread-count
-// GET /messages/search?q=&conv= — search messages inside a conversation or globally
-
-
-
-
-
-
-// ══ USER ANALYTICS ═══════════════════════════════════════════════════════════
-// This route was missing from v7 — frontend calls GET /api/user/analytics
-
 router.get('/user/analytics', auth, asyncH(async (req,res) => {
-  // Analytics: Pro-only, but active Founding Members have Pro-equivalent access
+
   const callerPlan = getActivePlan(req.user);
-  const hasProAccess = callerPlan.id === 'pro' || callerPlan.id === 'legacy_pro' || isEarlyAdopterActive(req.user);
-  if (!hasProAccess) {
+  const hasAnalyticsAccess = callerPlan.id === 'pro' || callerPlan.id === 'founding_member' || callerPlan.id === 'legacy_pro';
+  if (!hasAnalyticsAccess) {
     return res.status(403).json({ error:'pro_required', message:'Analytics is available on the Pro plan. Upgrade to access.' });
   }
   const uid = req.user._id;
@@ -3569,7 +3389,7 @@ router.get('/user/analytics', auth, asyncH(async (req,res) => {
     Notification.countDocuments({ recipient:uid, read:false }),
     Review.countDocuments({ reviewee:uid }),
     User.findById(uid).select('wishlist').then(u=>u?.wishlist?.length||0),
-    Task.aggregate([{ $match:{ owner:uid } },{ $group:{ _id:'$status', count:{ $sum:1 } } }]),
+    Task.aggregate([{ $match:{ user:uid } },{ $group:{ _id:'$status', count:{ $sum:1 } } }]),
     Listing.aggregate([
       { $match:{ seller:uid } },
       { $group:{ _id:{ $dateToString:{ format:'%Y-%m', date:'$createdAt' } }, count:{ $sum:1 }, revenue:{ $sum:'$price' } } },
@@ -3592,18 +3412,10 @@ router.get('/user/analytics', auth, asyncH(async (req,res) => {
   });
 }));
 
-
-// ══ TRANSACTION-BOUND MESSAGING ═════════════════════════════════════════════
-
-
-// ══ REPORTS ══════════════════════════════════════════════════════════════════
-
 router.post('/reports', auth, [body('targetType').isIn(['listing','user','post','transaction']), body('targetId').isMongoId(), body('reason').trim().isLength({ min:10,max:1000 })], validate, asyncH(async (req,res) => {
   const report=await Report.create({ reporter:req.user._id, targetType:req.body.targetType, targetId:req.body.targetId, reason:req.body.reason });
   res.status(201).json(report);
 }));
-
-// ══ SEARCH ═══════════════════════════════════════════════════════════════════
 
 router.get('/search', searchLimiter, asyncH(async (req,res) => {
   const q=req.query.q?.trim()||'';
@@ -3616,8 +3428,6 @@ router.get('/search', searchLimiter, asyncH(async (req,res) => {
   ]);
   res.json({ listings:listings.map(l=>({ ...l,usdPrice:convertNGNtoUSD(l.price) })), users, posts });
 }));
-
-// ══ ADMIN ════════════════════════════════════════════════════════════════════
 
 router.get('/admin/stats', auth, adminOnly, asyncH(async (req,res) => {
   const [users,listings,txs,activeDisputes,pendingDeposits,pendingWithdrawals,activeSubs]=await Promise.all([
@@ -3665,8 +3475,8 @@ router.post('/admin/transactions/:id/force-release', auth, adminOnly, [param('id
       tx.adminNote=`Force released by admin ${req.user.username}. ${req.body.note||''}`;
       await tx.save({ session });
       closeConvForTx(tx._id, 'admin_force_released').catch(()=>{});
-      await walletMove({ session, userId:tx.sellerId._id, fromBucket:'escrow', toBucket:'withdrawable', amount:sellerReceives, type:'escrow_release', note:'Admin force release', transactionId:tx._id, fee });
-      await User.findByIdAndUpdate(tx.buyerId._id, { $inc:{ escrowBalance:-tx.escrowAmount } }, { session });
+      await walletMove({ session, userId:tx.buyerId._id, fromBucket:'escrow', toBucket:'external', amount:tx.escrowAmount, type:'escrow_release', note:'Admin force release — escrow debited', transactionId:tx._id });
+      await walletMove({ session, userId:tx.sellerId._id, fromBucket:'external', toBucket:'withdrawable', amount:sellerReceives, type:'escrow_release', note:'Admin force release', transactionId:tx._id, fee });
       if (tx.disputeId) await Dispute.findByIdAndUpdate(tx.disputeId,{ status:'RESOLVED',decision:'release',resolvedAt:new Date() },{ session });
       await Listing.findByIdAndUpdate(tx.itemId,{ status:'sold' },{ session });
       await logAdmin(req.user._id,'force_release','Transaction',tx._id.toString(),req.body.note||'',{ amount:tx.escrowAmount,sellerId:tx.sellerId._id },'web');
@@ -3696,7 +3506,7 @@ router.post('/admin/transactions/:id/force-refund', auth, adminOnly, [param('id'
       await walletMove({ session, userId:tx.buyerId._id, fromBucket:'escrow', toBucket:'available', amount:tx.escrowAmount, type:'escrow_refund', note:`Admin force refund. ${req.body.note||''}`, transactionId:tx._id });
       if (tx.disputeId) await Dispute.findByIdAndUpdate(tx.disputeId,{ status:'RESOLVED',decision:'refund',resolvedAt:new Date() },{ session });
       await Listing.findByIdAndUpdate(tx.itemId,{ status:'active' },{ session });
-      // Lock referral if purchase refunded to prevent abuse
+
       await Referral.findOneAndUpdate({ refereeId:tx.buyerId._id },{ locked:true, lockedReason:`Purchase ${tx._id} refunded` }).catch(()=>{});
       await logAdmin(req.user._id,'force_refund','Transaction',tx._id.toString(),req.body.note||'',{ amount:tx.escrowAmount,buyerId:tx.buyerId._id },'web');
     });
@@ -3770,24 +3580,15 @@ router.get('/admin/subscriptions', auth, adminOnly, asyncH(async (req,res) => {
 }));
 
 router.post('/admin/subscriptions/:userId/revoke', auth, adminOnly, [param('userId').isMongoId()], validate, asyncH(async (req,res) => {
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      await Subscription.findOneAndUpdate(
-        { userId:req.params.userId, status:'active' },
-        { status:'cancelled' },
-        { session }
-      );
-      await User.findByIdAndUpdate(
-        req.params.userId,
-        { activePlan:'free', planExpiresAt:null },
-        { session }
-      );
-    });
-    await logAdmin(req.user._id,'revoke_subscription','User',req.params.userId,req.body.reason||'','{}','web');
-    sendNotification({ recipient:req.params.userId, type:'system', title:'Subscription Revoked', message:'Your subscription has been revoked by admin.', link:'/subscription' }).catch(()=>{});
-    res.json({ ok:true });
-  } finally { session.endSession(); }
+  await Subscription.findOneAndUpdate({ userId:req.params.userId, status:'active' },{ status:'cancelled' });
+  const targetUser = await User.findById(req.params.userId).lean();
+  const isFMActive = targetUser && isFoundingMemberActive(targetUser);
+  if (!isFMActive) {
+    await User.findByIdAndUpdate(req.params.userId,{ activePlan:'free', planExpiresAt:null });
+  }
+  await logAdmin(req.user._id,'revoke_subscription','User',req.params.userId,req.body.reason||'','{}','web');
+  sendNotification({ recipient:req.params.userId, type:'system', title:'Subscription Revoked', message: isFMActive ? 'Your paid subscription was revoked. Your Founding Member zero-fee perks remain active.' : 'Your subscription has been revoked by admin.', link:'/subscription' }).catch(()=>{});
+  res.json({ ok:true });
 }));
 
 router.get('/admin/referrals', auth, adminOnly, asyncH(async (req,res) => {
@@ -3836,9 +3637,6 @@ router.get('/admin/analytics', auth, adminOnly, asyncH(async (req,res) => {
   res.json({ listingsByCategory, txByState, walletTotals:walletTotals[0]||{}, dailySignups, subsByPlan, rate:currencyConfig.rate });
 }));
 
-// ══ BACKGROUND JOBS ══════════════════════════════════════════════════════════
-
-// Offer expiry
 const expireOffers = async () => {
   const expired=await Offer.find({ status:'pending', expiresAt:{ $lt:new Date() } });
   for (const offer of expired) {
@@ -3855,10 +3653,9 @@ const expireOffers = async () => {
 };
 setInterval(expireOffers, 30*60*1000);
 
-// Auto-release job
 const processAutoReleases = async () => {
   const now=new Date();
-  // DELIVERED → COMPLETED (48h auto-release)
+
   const deliveredTxs=await Transaction.find({ state:TX_STATES.DELIVERED, autoReleaseAt:{ $lt:now } })
     .populate('buyerId','username email').populate('sellerId','username email');
   for (const tx of deliveredTxs) {
@@ -3868,14 +3665,15 @@ const processAutoReleases = async () => {
         const seller=await User.findById(tx.sellerId._id).session(session);
         const plan=getActivePlan(seller);
         const feePercent=tx.escrowFeePercent||plan.escrowFeePercent;
-        const fee=Math.round(tx.escrowAmount*feePercent/100);
+        const fee=calculateEscrowFee(tx.escrowAmount, feePercent, seller);
         const sellerReceives=tx.escrowAmount-fee;
         const now2=new Date();
         tx.state=TX_STATES.COMPLETED; tx.timestamps_state.COMPLETED=now2; tx.reviewUnlocked=true;
         await tx.save({ session });
         closeConvForTx(tx._id, 'auto_released').catch(()=>{});
-        await walletMove({ session, userId:tx.sellerId._id, fromBucket:'escrow', toBucket:'withdrawable', amount:sellerReceives, type:'escrow_release', note:'Auto-release 48h', transactionId:tx._id, fee });
-        await User.findByIdAndUpdate(tx.buyerId._id, { $inc:{ escrowBalance:-tx.escrowAmount,totalPurchases:1 } }, { session });
+        await walletMove({ session, userId:tx.buyerId._id, fromBucket:'escrow', toBucket:'external', amount:tx.escrowAmount, type:'escrow_release', note:'Auto-release 48h — escrow debited', transactionId:tx._id });
+        await walletMove({ session, userId:tx.sellerId._id, fromBucket:'external', toBucket:'withdrawable', amount:sellerReceives, type:'escrow_release', note:'Auto-release 48h', transactionId:tx._id, fee });
+        await User.findByIdAndUpdate(tx.buyerId._id, { $inc:{ totalPurchases:1 } }, { session });
         await User.findByIdAndUpdate(tx.sellerId._id, { $inc:{ totalSales:1 } }, { session });
         await Listing.findByIdAndUpdate(tx.itemId,{ status:'sold' },{ session });
       });
@@ -3885,7 +3683,6 @@ const processAutoReleases = async () => {
     finally { await session.endSession(); }
   }
 
-  // ESCROW_FUNDED + dispatch expired → CANCELLED
   const dispatchExpired=await Transaction.find({ state:TX_STATES.ESCROW_FUNDED, dispatchDeadlineAt:{ $lt:now } })
     .populate('buyerId','username email').populate('sellerId','username email');
   for (const tx of dispatchExpired) {
@@ -3908,7 +3705,6 @@ const processAutoReleases = async () => {
 };
 setInterval(processAutoReleases, 30*60*1000);
 
-// Dispute escalation job
 const processDisputeEscalations = async () => {
   const now=new Date();
   const toEscalate=await Dispute.find({ status:'OPEN', responseDeadlineAt:{ $lt:now }, escalatedAt:null })
@@ -3926,17 +3722,22 @@ const processDisputeEscalations = async () => {
 };
 setInterval(processDisputeEscalations, 60*60*1000);
 
-// Subscription expiry job
 const processSubscriptionExpiry = async () => {
   const now=new Date();
-  const expiredSubs=await Subscription.find({ status:'active', endDate:{ $lt:now } }).populate('userId','_id email username activePlan');
+  const expiredSubs=await Subscription.find({ status:'active', endDate:{ $lt:now } }).populate('userId','_id email username activePlan isEarlyAdopter earlyAdopterNumber earlyAdopterGrantedAt');
   for (const sub of expiredSubs) {
     sub.status='expired'; await sub.save();
-    await User.findByIdAndUpdate(sub.userId._id,{ activePlan:'free', planExpiresAt:null });
-    sendNotification({ recipient:sub.userId._id, type:'system', title:'Subscription Expired', message:'Your plan has reverted to Free. Renew to restore benefits.', link:'/subscription' }).catch(()=>{});
-    console.log(`[Sub] Expired: ${sub.userId.username} → free`);
+    // Don't revert to free if user is still in their Founding Member 180-day window
+    const isFMStillActive = sub.userId && isFoundingMemberActive(sub.userId);
+    if (!isFMStillActive) {
+      await User.findByIdAndUpdate(sub.userId._id,{ activePlan:'free', planExpiresAt:null });
+      sendNotification({ recipient:sub.userId._id, type:'system', title:'Subscription Expired', message:'Your plan has reverted to Free. Renew to restore benefits.', link:'/subscription' }).catch(()=>{});
+    } else {
+      sendNotification({ recipient:sub.userId._id, type:'system', title:'Subscription Expired', message:'Your paid plan expired. Your Founding Member zero-fee perks are still active until your 180-day window ends.', link:'/subscription' }).catch(()=>{});
+    }
+    console.log(`[Sub] Expired: ${sub.userId.username} → ${isFMStillActive ? 'kept (FM active)' : 'free'}`);
   }
-  // Send 5-day expiry reminders
+
   const reminderDate=new Date(now.getTime()+5*86400000);
   const expiringSoon=await Subscription.find({ status:'active', endDate:{ $lt:reminderDate, $gt:now }, expiryReminderSent:false }).populate('userId','email username activePlan');
   for (const sub of expiringSoon) {
@@ -3947,77 +3748,73 @@ const processSubscriptionExpiry = async () => {
 };
 setInterval(processSubscriptionExpiry, 60*60*1000);
 
-// ── Early adopter perk lifecycle job — runs hourly ───────────────────────────
 const processEarlyAdopterExpiry = async () => {
-  const now = new Date();
-  // All active founding members
-  const founders = await User.find({
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - EARLY_ADOPTER_PERK_MONTHS);
+  const expired = await User.find({
     isEarlyAdopter: true,
+    earlyAdopterGrantedAt: { $lt: cutoff },
     isActive: true,
-  }).select('_id username email activePlan legacyPlan earlyAdopterGrantedAt eaReminder14Sent eaReminder7Sent').lean();
-
-  for (const u of founders) {
-    if (!u.earlyAdopterGrantedAt) continue;
-    const expiry = new Date(u.earlyAdopterGrantedAt);
-    expiry.setMonth(expiry.getMonth() + EARLY_ADOPTER_PERK_MONTHS);
-    const daysLeft = Math.ceil((expiry - now) / 86400000);
-
-    // ── 14-day reminder ─────────────────────────────────────────────────────
-    if (daysLeft <= 14 && daysLeft > 7 && !u.eaReminder14Sent) {
-      sendEmail(u.email, emailTemplates.foundingMember14Day(u.username)).catch(() => {});
-      sendNotification({
-        recipient: u._id, type: 'system',
-        title: '⏳ 14 Days Remaining',
-        message: 'Your 6 months of Free-Everything access is nearly complete! Keep your Exclusive Industrial Badge forever and check out your exclusive Legacy Member discount in settings.',
-        link: '/subscription',
-      }).catch(() => {});
-      await User.findByIdAndUpdate(u._id, { eaReminder14Sent: true });
-      console.log(`[EarlyAdopter] 14-day reminder sent: ${u.username}`);
-    }
-
-    // ── 7-day reminder ──────────────────────────────────────────────────────
-    if (daysLeft <= 7 && daysLeft > 0 && !u.eaReminder7Sent) {
-      sendEmail(u.email, emailTemplates.foundingMember7Day(u.username)).catch(() => {});
-      sendNotification({
-        recipient: u._id, type: 'system',
-        title: '⏳ Final Week: Claim Your Legacy Status',
-        message: "Your 0% escrow expires in 7 days. Lock in your 50% Legacy discount now — it's exclusive to you.",
-        link: '/subscription',
-      }).catch(() => {});
-      await User.findByIdAndUpdate(u._id, { eaReminder7Sent: true });
-      console.log(`[EarlyAdopter] 7-day reminder sent: ${u.username}`);
-    }
-
-    // ── Perk window expired ─────────────────────────────────────────────────
-    if (daysLeft <= 0) {
-      // Only revert if no active paid or legacy subscription
-      const hasSub = await Subscription.exists({ userId: u._id, status: 'active', endDate: { $gt: now } });
-      if (!hasSub && (!u.legacyPlan || u.legacyPlan === 'none')) {
-        await User.findByIdAndUpdate(u._id, { activePlan: 'free', planExpiresAt: null });
-        sendNotification({
-          recipient: u._id, type: 'system',
-          title: 'Founding Member Free Period Ended',
-          message: 'Your 6-month free access has ended. Your Raw Industrial badge stays forever. Upgrade to a Legacy plan to keep discounted rates.',
-          link: '/subscription',
-        }).catch(() => {});
-        console.log(`[EarlyAdopter] Free window expired for ${u.username}`);
-      }
+  }).select('_id username email activePlan earlyAdopterNumber earlyAdopterGrantedAt').lean();
+  for (const u of expired) {
+    if (u.activePlan === 'free') continue;
+    // Never revert a Founding Member who is still inside their 180-day FM window
+    if (isFoundingMemberActive(u)) continue;
+    const hasSub = await Subscription.exists({ userId: u._id, status: 'active', endDate: { $gt: new Date() } });
+    if (!hasSub) {
+      await User.findByIdAndUpdate(u._id, { activePlan: 'free', planExpiresAt: null });
+      sendNotification({ recipient: u._id, type: 'system', title: 'Early Adopter Perks Ended', message: 'Your 6-month free-fee early adopter period has ended. Upgrade to a plan to continue enjoying benefits.', link: '/subscription' }).catch(() => {});
     }
   }
 };
-setInterval(processEarlyAdopterExpiry, 60 * 60 * 1000);
-processEarlyAdopterExpiry().catch(() => {}); // run once on startup
 
-// 24h auto-release warnings
+const processFoundingMemberAlerts = async () => {
+  const now = new Date();
+  const candidates = await User.find({
+    isEarlyAdopter: true,
+    earlyAdopterNumber: { $lte: FOUNDING_MEMBER_LIMIT },
+    isActive: true,
+    earlyAdopterGrantedAt: { $ne: null },
+  }).select('_id username email earlyAdopterNumber earlyAdopterGrantedAt foundingMember14DaySent foundingMember7DaySent').lean();
+
+  for (const u of candidates) {
+    const expiresAt = new Date(u.earlyAdopterGrantedAt);
+    expiresAt.setDate(expiresAt.getDate() + FOUNDING_MEMBER_PERK_DAYS);
+    const msToExpiry = expiresAt - now;
+    if (msToExpiry <= 0) {
+      const hasSub = await Subscription.exists({ userId: u._id, status:'active', plan:{ $in:LEGACY_PLAN_IDS }, endDate:{ $gt:now } });
+      if (!hasSub) {
+        await User.findByIdAndUpdate(u._id, { activePlan:'free', planExpiresAt:null });
+        sendNotification({ recipient:u._id, type:'system', title:'Founding Member perks period ended', message:'Your zero-fee period has ended. Your Raw Industrial Badge remains permanently. Subscribe to a Legacy plan to continue.', link:'/subscription' }).catch(()=>{});
+      }
+      continue;
+    }
+    const hasPaidLegacy = await Subscription.exists({ userId:u._id, status:'active', plan:{ $in:LEGACY_PLAN_IDS }, endDate:{ $gt:now } });
+    if (hasPaidLegacy) continue;
+    if (msToExpiry <= 14 * 86400000 && !u.foundingMember14DaySent) {
+      sendEmail(u.email, emailTemplates.foundingMember14DayAlert(u.username, u.earlyAdopterNumber, expiresAt)).catch(()=>{});
+      sendNotification({ recipient:u._id, type:'system', title:'⚒️ Your benefits are evolving — 14 days left', message:'Lock in your Legacy rate now. Legacy Basic (₦750/mo) or Legacy Pro (₦2,250/mo) — LIFETIME PRICE LOCK.', link:'/subscription' }).catch(()=>{});
+      await User.findByIdAndUpdate(u._id, { foundingMember14DaySent: true });
+    }
+    if (msToExpiry <= 7 * 86400000 && !u.foundingMember7DaySent) {
+      sendEmail(u.email, emailTemplates.foundingMember7DayAlert(u.username, u.earlyAdopterNumber, expiresAt)).catch(()=>{});
+      sendNotification({ recipient:u._id, type:'system', title:'🚨 Final Week — Lock in your Legacy Rate', message:"Only 7 days left to claim your lifetime Legacy pricing. Don't miss it.", link:'/subscription' }).catch(()=>{});
+      await User.findByIdAndUpdate(u._id, { foundingMember7DaySent: true });
+    }
+  }
+};
+
+setInterval(processEarlyAdopterExpiry, 60*60*1000);
+processEarlyAdopterExpiry().catch(() => {});
+setInterval(processFoundingMemberAlerts, 60*60*1000);
+processFoundingMemberAlerts().catch(() => {});
+
 const sendAutoReleaseWarnings = async () => {
   const warnAt=new Date(Date.now()+24*60*60*1000);
   const txs=await Transaction.find({ state:TX_STATES.DELIVERED, autoReleaseAt:{ $lt:warnAt,$gt:new Date() } }).populate('buyerId','username email');
   for (const tx of txs) sendEmail(tx.buyerId.email, emailTemplates.autoReleaseWarning(tx.buyerId.username, tx)).catch(()=>{});
 };
 setInterval(sendAutoReleaseWarnings, 60*60*1000);
-
-// ══ TELEGRAM BOT INTEGRATION ══════════════════════════════════════════════════
-// Atomic, production-safe Telegram bot for proof submission & admin approval
 
 let tgBot = null;
 
@@ -4039,7 +3836,6 @@ function initTelegramBot() {
     tgBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling:true });
     console.log('[Telegram] Bot started');
 
-    // ── /start — onboarding ───────────────────────────────────────────────────
     tgBot.onText(/\/start/, (msg) => {
       tgBot.sendMessage(msg.chat.id,
         `🏪 *RawFlip Marketplace Bot*\n\nCommands:\n` +
@@ -4053,7 +3849,6 @@ function initTelegramBot() {
       );
     });
 
-    // ── /status <txId> ────────────────────────────────────────────────────────
     tgBot.onText(/\/status (.+)/, async (msg, match) => {
       const txId = match[1]?.trim();
       if (!txId || !mongoose.Types.ObjectId.isValid(txId)) {
@@ -4071,7 +3866,6 @@ function initTelegramBot() {
       }
     });
 
-    // ── /deposit — user submits proof via Telegram ─────────────────────────
     tgBot.onText(/\/deposit/, (msg) => {
       tgBot.sendMessage(msg.chat.id,
         `💳 *Submit Payment Proof*\n\nSend your proof by replying to this message with:\n1. Your Transaction ID (from the app)\n2. A photo of your payment receipt\n\nFormat: Send transaction ID first, then photo.`,
@@ -4079,12 +3873,10 @@ function initTelegramBot() {
       );
     });
 
-    // ── Photo handler — proof submission ───────────────────────────────────
     tgBot.on('photo', async (msg) => {
       const chatId = msg.chat.id;
       const caption = msg.caption?.trim() || '';
 
-      // Extract transaction ID from caption
       const txIdMatch = caption.match(/[a-f0-9]{24}/i);
       if (!txIdMatch) {
         return tgBot.sendMessage(chatId,
@@ -4094,7 +3886,6 @@ function initTelegramBot() {
       }
       const txId = txIdMatch[0];
 
-      // Get the largest photo
       const photoArr = msg.photo;
       const fileId = photoArr[photoArr.length - 1].file_id;
 
@@ -4109,7 +3900,6 @@ function initTelegramBot() {
           return tgBot.sendMessage(chatId, '❌ Proof already submitted for this transaction');
         }
 
-        // Atomic update: prevent race condition
         const updated = await WalletTx.findOneAndUpdate(
           { _id:txId, status:WALLET_TX_STATES.PENDING, telegramFileId:null },
           {
@@ -4130,16 +3920,14 @@ function initTelegramBot() {
           { parse_mode:'Markdown' }
         );
 
-        // Notify admin
         telegramNotifyAdmin(
           `📎 *New Proof Submission via Telegram*\n\nUser: ${wtx.user?.username}\nAmount: ₦${wtx.amount?.toLocaleString()}\nFee: ₦${wtx.fee?.toLocaleString()}\nTx ID: \`${txId}\`\n\nApprove: /approve ${txId}\nReject: /reject ${txId} <reason>`
         );
-        // Forward proof photo to admin chat
+
         if (process.env.TELEGRAM_ADMIN_CHAT_ID) {
           tgBot.forwardMessage(process.env.TELEGRAM_ADMIN_CHAT_ID, chatId, msg.message_id).catch(()=>{});
         }
 
-        // Update web admin
         const admins = await User.find({ role:'admin', isActive:true }).select('_id');
         admins.forEach(a => {
           sendNotification({ recipient:a._id, type:'system', title:'Proof Submitted via Telegram', message:`${wtx.user?.username} submitted proof for ₦${wtx.amount?.toLocaleString()} deposit`, link:'/admin' }).catch(()=>{});
@@ -4152,7 +3940,6 @@ function initTelegramBot() {
       }
     });
 
-    // ── /approve <txId> — admin command ───────────────────────────────────
     tgBot.onText(/\/approve (.+)/, async (msg, match) => {
       const chatId = msg.chat.id;
       const txId = match[1]?.trim();
@@ -4161,21 +3948,19 @@ function initTelegramBot() {
         return tgBot.sendMessage(chatId, '❌ Invalid transaction ID');
       }
 
-      // Validate admin — must match configured Telegram admin chat ID OR be a registered admin
       const isAdminChat = process.env.TELEGRAM_ADMIN_CHAT_ID && chatId.toString() === process.env.TELEGRAM_ADMIN_CHAT_ID.toString();
       if (!isAdminChat) {
         return tgBot.sendMessage(chatId, '🔒 Unauthorized. Admin commands are restricted.');
       }
 
       try {
-        // Fetch wallet tx — must be in proof_submitted (deposit) or pending (withdrawal)
+
         const wtx = await WalletTx.findById(txId).populate('user','username email _id');
         if (!wtx) return tgBot.sendMessage(chatId, '❌ Transaction not found');
         if (!['deposit','withdrawal'].includes(wtx.type)) {
           return tgBot.sendMessage(chatId, `❌ Cannot approve type: ${wtx.type}`);
         }
 
-        // Idempotency: prevent double approval
         if (wtx.adminActionAt) {
           return tgBot.sendMessage(chatId, `❌ Already actioned at ${wtx.adminActionAt.toISOString()}`);
         }
@@ -4185,15 +3970,13 @@ function initTelegramBot() {
           return tgBot.sendMessage(chatId, `❌ Cannot approve — current status: ${wtx.status}`);
         }
 
-        // Find a system admin user for logging
         const adminUser = await User.findOne({ role:'admin', isActive:true }).select('_id username');
 
-        // Atomic session: approval + wallet update
         const session = await mongoose.startSession();
         try {
           await session.withTransaction(async () => {
             if (wtx.type === 'deposit') {
-              // Credit netAmount atomically
+
               const updatedUser = await User.findByIdAndUpdate(
                 wtx.user._id,
                 { $inc:{ availableBalance:wtx.netAmount } },
@@ -4201,9 +3984,9 @@ function initTelegramBot() {
               );
               if (!updatedUser) throw new Error('User not found — aborting');
             }
-            // Atomic update with findOneAndUpdate to prevent race condition
+
             const actionResult = await WalletTx.findOneAndUpdate(
-              { _id:txId, adminActionAt:null }, // Idempotency guard
+              { _id:txId, adminActionAt:null },
               {
                 $set:{
                   status: WALLET_TX_STATES.APPROVED,
@@ -4217,7 +4000,6 @@ function initTelegramBot() {
             );
             if (!actionResult) throw new Error('Transaction already actioned (race condition caught)');
 
-            // Log the admin action
             if (adminUser) {
               await AdminLog.create([{
                 adminId: adminUser._id,
@@ -4231,7 +4013,6 @@ function initTelegramBot() {
             }
           });
 
-          // Notify user
           io.to(`user:${wtx.user._id}`).emit('wallet:tx_approved', { walletTxId:txId, type:wtx.type, amount:wtx.amount, netAmount:wtx.netAmount });
           sendNotification({
             recipient: wtx.user._id, type:'system',
@@ -4255,7 +4036,6 @@ function initTelegramBot() {
       }
     });
 
-    // ── /reject <txId> [reason] — admin command ────────────────────────────
     tgBot.onText(/\/reject (.+)/, async (msg, match) => {
       const chatId = msg.chat.id;
       const parts = match[1]?.trim().split(' ');
@@ -4280,7 +4060,7 @@ function initTelegramBot() {
         try {
           await session.withTransaction(async () => {
             if (wtx.type === 'withdrawal') {
-              // Refund pre-deducted balance
+
               await User.findByIdAndUpdate(wtx.user._id, { $inc:{ withdrawableBalance:wtx.amount } }, { session });
             }
             const actionResult = await WalletTx.findOneAndUpdate(
@@ -4328,20 +4108,44 @@ function initTelegramBot() {
   }
 }
 
-// ══ MOUNT ROUTER ═════════════════════════════════════════════════════════════
-// Serve manifest + PWA icons — added v20
 app.get('/manifest.json', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
 });
-// /icons/* served from public/icons/
+
 app.use('/icons', require('express').static(path.join(__dirname, 'public', 'icons')));
 
-app.use('/api', router);
+router.get('/admin/founding-members', auth, adminOnly, asyncH(async (req,res) => {
+  const { skip, limit, page } = paginate(req);
+  const filter = { isEarlyAdopter: true, earlyAdopterNumber: { $lte: FOUNDING_MEMBER_LIMIT } };
+  if (req.query.q) {
+    const re = new RegExp(req.query.q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i');
+    filter.$or = [{ username:re }, { email:re }];
+  }
+  const [users, total] = await Promise.all([
+    User.find(filter)
+      .select('username email earlyAdopterNumber earlyAdopterGrantedAt activePlan planExpiresAt isActive emailVerified priority_support foundingMember14DaySent foundingMember7DaySent createdAt')
+      .skip(skip).limit(limit).sort({ earlyAdopterNumber:1 }).lean(),
+    User.countDocuments(filter),
+  ]);
+  const now = new Date();
+  const enriched = users.map(u => {
+    const exp = u.earlyAdopterGrantedAt ? new Date(u.earlyAdopterGrantedAt) : null;
+    if (exp) exp.setDate(exp.getDate() + FOUNDING_MEMBER_PERK_DAYS);
+    return {
+      ...u,
+      foundingMemberActive: exp ? now < exp : false,
+      foundingMemberExpiresAt: exp,
+      planLabel: (exp && now < exp) ? 'Founding Member (Premium Access)' : u.activePlan,
+    };
+  });
+  res.json({ foundingMembers: enriched, total, page, pages: Math.ceil(total/limit) });
+}));
+
+app.use('/api', csrfMiddleware, router);
 app.get('/health', (_,res) => res.json({ status:'ok', ts:Date.now(), rate:currencyConfig.rate }));
 
-// Error handler
 app.use((err,req,res,next) => {
-  // Ensure CORS headers are present even on error responses
+
   const origin = req.headers.origin;
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
@@ -4354,7 +4158,6 @@ app.use((err,req,res,next) => {
   res.status(500).json({ error:IS_PROD?t('server_error'):(err.message||'Unknown error') });
 });
 
-// ══ SOCKET.IO ════════════════════════════════════════════════════════════════
 io.use(async (socket,next) => {
   try {
     const token=socket.handshake.auth?.token||socket.handshake.headers?.authorization?.replace('Bearer ','');
@@ -4372,7 +4175,7 @@ io.on('connection', socket => {
   socket.join(`user:${uid}`);
   if (!userSockets.has(uid)) userSockets.set(uid,new Set());
   userSockets.get(uid).add(socket.id);
-  // Broadcast online status to contacts
+
   io.emit('user:online', { userId:uid, online:true, lastSeen:new Date().toISOString() });
   socket.on('disconnect', ()=>{
     const set=userSockets.get(uid);
@@ -4380,15 +4183,12 @@ io.on('connection', socket => {
     if (!userSockets.has(uid)) {
       const lastSeen = new Date();
       User.findByIdAndUpdate(uid,{ lastSeen }).catch(()=>{});
-      // Broadcast offline status so other users can update UI
+
       io.emit('user:online', { userId:uid, online:false, lastSeen:lastSeen.toISOString() });
     }
   });
 });
 
-// ══ LEGAL AGREEMENT ROUTES ════════════════════════════════════════════════════
-
-// GET /agreements/status — current user's agreement status
 router.get('/agreements/status', auth, asyncH(async (req,res) => {
   const u = await User.findById(req.user._id)
     .select('privacy_policy_agreed privacy_policy_agreed_at terms_agreed terms_agreed_at terms_version about_understood about_understood_at').lean();
@@ -4407,7 +4207,6 @@ router.get('/agreements/status', auth, asyncH(async (req,res) => {
   });
 }));
 
-// POST /agreements/agree — record user agreement
 router.post('/agreements/agree', auth, [
   body('document').isIn(['privacy','terms','about']).withMessage('Invalid document'),
 ], validate, asyncH(async (req,res) => {
@@ -4424,7 +4223,6 @@ router.post('/agreements/agree', auth, [
   res.json({ ok:true, document });
 }));
 
-// GET /admin/agreements — admin view of all users' agreement status
 router.get('/admin/agreements', auth, adminOnly, asyncH(async (req,res) => {
   const { skip, limit, page } = paginate(req);
   const filter = {};
@@ -4448,27 +4246,25 @@ router.get('/admin/agreements', auth, adminOnly, asyncH(async (req,res) => {
   res.json({ users, total, page, pages:Math.ceil(total/limit), current_terms_version:CURRENT_TERMS_VERSION });
 }));
 
-
-// ══ SUPPORT TICKET SCHEMA — added v20 ════════════════════════
 const supportTicketSchema = new mongoose.Schema({
-  ticketNumber: { type:String, unique:true },   // auto-generated RF-XXXXXX
+  ticketNumber: { type:String, unique:true },
   user:       { type:mongoose.Schema.Types.ObjectId, ref:'User', default:null },
   name:       { type:String, default:'Guest' },
   email:      { type:String, default:'' },
   subject:    { type:String, required:true, maxlength:200 },
   message:    { type:String, required:true, maxlength:5000 },
-  attachment: { type:String, default:null },     // file path
+  attachment: { type:String, default:null },
   status:     { type:String, enum:['open','pending','resolved','closed'], default:'open', index:true },
+  priority:   { type:String, enum:['normal','PRIORITY_FOUNDING_MEMBER'], default:'normal', index:true },
   adminReply: { type:String, default:null, maxlength:5000 },
-  adminNotes: { type:String, default:null },     // internal notes — never sent to user
+  adminNotes: { type:String, default:null },
   repliedAt:  { type:Date, default:null },
   closedAt:   { type:Date, default:null },
 }, { timestamps:true });
 
-// Auto-generate ticket number like RF-A3F29B before save
 supportTicketSchema.pre('save', async function() {
   if (!this.ticketNumber) {
-    // Use random hex + timestamp suffix to keep it short and unique
+
     const rand = Math.random().toString(36).slice(2,5).toUpperCase();
     const ts   = Date.now().toString(36).slice(-3).toUpperCase();
     this.ticketNumber = 'RF-' + rand + ts;
@@ -4476,38 +4272,20 @@ supportTicketSchema.pre('save', async function() {
 });
 
 const SupportTicket = mongoose.model('SupportTicket', supportTicketSchema);
-// ══ /SUPPORT TICKET SCHEMA ════════════════════════════════════
 
+const SUPPORT_ADDR =  ['n','e','t','l','i','f','e','s','o','c','i','a','l','@','g','m','a','i','l','.','c','o','m'].join('');
 
-/* ══════════════════════════════════════════════════════════════
-   SUPPORT ROUTES — added v20
-   POST /api/support/tickets         — submit a ticket
-   GET  /api/support/tickets         — list own tickets (auth)
-   GET  /api/support/tickets/:id     — get one ticket (auth + owner/admin)
-   PUT  /api/support/tickets/:id/reply — admin reply
-   PUT  /api/support/tickets/:id/status — admin status change
-   GET  /api/admin/support/tickets   — admin list all tickets
-═══════════════════════════════════════════════════════════════ */
-
-// Support team address (obfuscated — do not log or expose in API responses)
-const SUPPORT_ADDR = /* protected */ ['n','e','t','l','i','f','e','s','o','c','i','a','l','@','g','m','a','i','l','.','c','o','m'].join('');
-
-// HTML escape helper for server-side email templates (esc is a frontend-only fn)
 const escHtml = (str) => String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 
-// Rate-limit ticket submissions: max 5 per 15 min per IP
 const ticketLimiter = rateLimit({ windowMs:15*60*1000, max:5, standardHeaders:true, legacyHeaders:false,
   message:{ error:'Too many support requests. Please wait 15 minutes.' } });
 
-// ── POST /support/tickets ─────────────────────────────────────
-// Accepts multipart/form-data (optional attachment field)
-// Auth optional — guests can submit too
 router.post('/support/tickets', ticketLimiter, uploadSupport.single('attachment'),
   [body('subject').trim().notEmpty().isLength({ max:200 }),
    body('message').trim().isLength({ min:20, max:5000 })],
   validate,
   asyncH(async (req,res) => {
-    // Resolve user info — prefer authenticated user
+
     let userId = null, userName = 'Guest', userEmail = '';
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
@@ -4517,7 +4295,7 @@ router.post('/support/tickets', ticketLimiter, uploadSupport.single('attachment'
         if (u) { userId = u._id; userName = u.username; userEmail = u.email; }
       } catch(_) {}
     }
-    // If no token in header, try cookie
+
     if (!userId && req.cookies?.rf_access) {
       try {
         const dec = jwt.verify(req.cookies.rf_access, JWT_SECRET);
@@ -4526,6 +4304,13 @@ router.post('/support/tickets', ticketLimiter, uploadSupport.single('attachment'
       } catch(_) {}
     }
 
+    let ticketPriority = 'normal';
+    if (userId) {
+      const ticketUser = await User.findById(userId).lean();
+      if (ticketUser && ticketUser.isEarlyAdopter && ticketUser.earlyAdopterNumber <= FOUNDING_MEMBER_LIMIT) {
+        ticketPriority = 'PRIORITY_FOUNDING_MEMBER';
+      }
+    }
     const ticket = await SupportTicket.create({
       user:       userId,
       name:       userName,
@@ -4533,9 +4318,9 @@ router.post('/support/tickets', ticketLimiter, uploadSupport.single('attachment'
       subject:    req.body.subject,
       message:    req.body.message,
       attachment: req.file ? `/uploads/${req.file.filename}` : null,
+      priority:   ticketPriority,
     });
 
-    // ── Email #1: notify support team ───────────────────────
     const teamHtml = emailBase(`
       <h2>New Support Ticket ${ticket.ticketNumber}</h2>
       <p><strong>From:</strong> ${escHtml(userName)} (${userEmail || 'guest'})</p>
@@ -4545,11 +4330,11 @@ router.post('/support/tickets', ticketLimiter, uploadSupport.single('attachment'
       ${ticket.attachment ? `<p><strong>Attachment:</strong> ${process.env.APP_URL||'http://localhost:5000'}${ticket.attachment}</p>` : ''}
       <p style="color:#8888aa;font-size:.8rem">Ticket ID: ${ticket._id} | Submitted: ${new Date().toUTCString()}</p>
     `);
-    // Send to support address — do not expose SUPPORT_ADDR in response
-    sendEmail(SUPPORT_ADDR, { subject:`[RawFlip Support] ${ticket.ticketNumber} — ${ticket.subject}`, html:teamHtml }).catch(()=>{});
 
-    // ── Email #2: auto-acknowledgement to user ───────────────
+    sendEmail(SUPPORT_ADDR, { subject:`[RawFlip Support]${ticketPriority === 'PRIORITY_FOUNDING_MEMBER' ? ' 🚀 PRIORITY FM —' : ''} ${ticket.ticketNumber} — ${ticket.subject}`, html:teamHtml }).catch(()=>{});
+
     if (userEmail) {
+      const isPriority = ticketPriority === 'PRIORITY_FOUNDING_MEMBER';
       const ackHtml = emailBase(`
         <h2>We received your request 📨</h2>
         <p>Hi ${escHtml(userName)},</p>
@@ -4557,7 +4342,7 @@ router.post('/support/tickets', ticketLimiter, uploadSupport.single('attachment'
         <div style="background:#1a1a2e;border-radius:8px;padding:16px;margin:16px 0;">
           <p style="margin:0 0 6px"><strong>Ticket:</strong> ${ticket.ticketNumber}</p>
           <p style="margin:0 0 6px"><strong>Subject:</strong> ${escHtml(ticket.subject)}</p>
-          <p style="margin:0;color:#8888aa;font-size:.85rem">Our team usually responds within 24 hours. You can track your ticket status in the app under Help &amp; Support → My Tickets.</p>
+          <p style="margin:0;color:#8888aa;font-size:.85rem">${isPriority ? '⚡ As a Founding Member, your ticket has been marked <strong style="color:#f0c040">Priority</strong> — we aim to respond within a few hours.' : 'Our team usually responds within 24 hours.'} You can track your ticket status in the app under Help &amp; Support → My Tickets.</p>
         </div>
         <p style="color:#8888aa;font-size:.8rem">Please do not reply to this email — use the ticket system in the app.</p>
       `);
@@ -4573,7 +4358,6 @@ router.post('/support/tickets', ticketLimiter, uploadSupport.single('attachment'
   })
 );
 
-// ── GET /support/tickets — list own tickets ───────────────────
 router.get('/support/tickets', auth, asyncH(async (req,res) => {
   const { skip, limit } = paginate(req);
   const filter = { user: req.user._id };
@@ -4586,19 +4370,17 @@ router.get('/support/tickets', auth, asyncH(async (req,res) => {
   res.json({ tickets, total });
 }));
 
-// ── GET /support/tickets/:id — get one ticket (owner or admin) ─
 router.get('/support/tickets/:id', auth, [param('id').isMongoId()], validate, asyncH(async (req,res) => {
   const ticket = await SupportTicket.findById(req.params.id).lean();
   if (!ticket) return res.status(404).json({ error:'Ticket not found' });
   const isOwner = ticket.user && ticket.user.toString() === req.user._id.toString();
   const isAdmin = req.user.role === 'admin';
   if (!isOwner && !isAdmin) return res.status(403).json({ error:'Forbidden' });
-  // Omit adminNotes for non-admins
+
   if (!isAdmin) delete ticket.adminNotes;
   res.json(ticket);
 }));
 
-// ── ADMIN: GET /admin/support/tickets ────────────────────────
 router.get('/admin/support/tickets', auth, adminOnly, asyncH(async (req,res) => {
   const { skip, limit } = paginate(req);
   const filter = {};
@@ -4610,13 +4392,12 @@ router.get('/admin/support/tickets', auth, adminOnly, asyncH(async (req,res) => 
   const [tickets, total] = await Promise.all([
     SupportTicket.find(filter)
       .populate('user','username email')
-      .sort({ createdAt:-1 }).skip(skip).limit(limit).lean(),
+      .sort({ priority:-1, createdAt:-1 }).skip(skip).limit(limit).lean(),
     SupportTicket.countDocuments(filter),
   ]);
   res.json({ tickets, total });
 }));
 
-// ── ADMIN: PUT /admin/support/tickets/:id/reply ───────────────
 router.put('/admin/support/tickets/:id/reply', auth, adminOnly,
   [param('id').isMongoId(), body('reply').trim().isLength({ min:1, max:5000 })],
   validate,
@@ -4625,10 +4406,9 @@ router.put('/admin/support/tickets/:id/reply', auth, adminOnly,
     if (!ticket) return res.status(404).json({ error:'Ticket not found' });
     ticket.adminReply = req.body.reply;
     ticket.repliedAt  = new Date();
-    ticket.status     = 'pending'; // waiting for user to read reply
+    ticket.status     = 'pending';
     await ticket.save();
 
-    // Email user with admin reply
     const userEmail = ticket.email || (ticket.user && ticket.user.email);
     const userName  = ticket.name  || (ticket.user && ticket.user.username) || 'User';
     if (userEmail) {
@@ -4647,10 +4427,9 @@ router.put('/admin/support/tickets/:id/reply', auth, adminOnly,
       sendEmail(userEmail, { subject:`[RawFlip Support] Reply to ${ticket.ticketNumber}`, html:replyHtml }).catch(()=>{});
     }
 
-    // Also notify in-app
     if (ticket.user) {
       await Notification.create({
-        user:    ticket.user._id || ticket.user,
+        recipient: ticket.user._id || ticket.user,
         type:    'system',
         title:   'Support reply received 💬',
         message: `Your ticket ${ticket.ticketNumber} has a reply from our team.`,
@@ -4662,7 +4441,6 @@ router.put('/admin/support/tickets/:id/reply', auth, adminOnly,
   })
 );
 
-// ── ADMIN: PUT /admin/support/tickets/:id/status ─────────────
 router.put('/admin/support/tickets/:id/status', auth, adminOnly,
   [param('id').isMongoId(), body('status').isIn(['open','pending','resolved','closed']),
    body('adminNotes').optional().trim().isLength({ max:2000 })],
@@ -4678,23 +4456,12 @@ router.put('/admin/support/tickets/:id/status', auth, adminOnly,
   })
 );
 
-// ── /SUPPORT ROUTES ───────────────────────────────────────────
-
-// ══ STARTUP ══════════════════════════════════════════════════════════════════
-
-
-// ══════════════════════════════════════════════════════════════
-// WEB PUSH SUBSCRIPTION ENDPOINTS
-// ══════════════════════════════════════════════════════════════
-
-// GET /push/vapid-key — public VAPID key for frontend subscription
 router.get('/push/vapid-key', (req, res) => {
   if (!VAPID_PUBLIC_KEY)
     return res.status(503).json({ error: 'Push notifications not configured on this server.' });
   res.json({ publicKey: VAPID_PUBLIC_KEY });
 });
 
-// POST /push-subscription — save a push subscription (requires auth)
 router.post('/push-subscription', auth, asyncH(async (req, res) => {
   const { endpoint, keys } = req.body || {};
   if (!endpoint || !keys?.p256dh || !keys?.auth)
@@ -4709,23 +4476,17 @@ router.post('/push-subscription', auth, asyncH(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// DELETE /push-subscription — remove subscription (user unsubscribed or permission revoked)
 router.delete('/push-subscription', auth, asyncH(async (req, res) => {
   const { endpoint } = req.body || {};
   if (endpoint) {
     await PushSub.deleteOne({ user: req.user._id, endpoint });
   } else {
-    // Remove ALL subscriptions for this user (e.g. permission fully revoked)
+
     await PushSub.deleteMany({ user: req.user._id });
   }
   res.json({ ok: true });
 }));
 
-// ══════════════════════════════════════════════════════════════
-// KYC ROUTES — internal, no third-party services
-// ══════════════════════════════════════════════════════════════
-
-// POST /kyc/submit — user submits KYC documents
 router.post('/kyc/submit', auth, asyncH(async (req, res) => {
   const user = await User.findById(req.user._id);
   if (user.kycStatus === 'approved')
@@ -4737,7 +4498,6 @@ router.post('/kyc/submit', auth, asyncH(async (req, res) => {
   if (!fullName || !dob || !idType || !idNumber || !idDocUrl || !selfieUrl || !address)
     return res.status(400).json({ error:'All KYC fields are required.' });
 
-  // Upsert — allow resubmission after rejection
   await KycDoc.findOneAndUpdate(
     { user: user._id },
     { fullName, dob, idType, idNumber, idDocUrl, selfieUrl, address,
@@ -4751,7 +4511,6 @@ router.post('/kyc/submit', auth, asyncH(async (req, res) => {
   user.kycRejectionNote = '';
   await user.save();
 
-  // Notify all admins instantly via socket
   const admins = await User.find({ role:'admin', isActive:true }).select('_id');
   admins.forEach(a => {
     sendNotification({
@@ -4765,7 +4524,6 @@ router.post('/kyc/submit', auth, asyncH(async (req, res) => {
   res.json({ ok:true, message:'KYC submitted successfully. Under review.' });
 }));
 
-// GET /kyc/status — user checks their own KYC status
 router.get('/kyc/status', auth, asyncH(async (req, res) => {
   const user = await User.findById(req.user._id).select('kycStatus kycSubmittedAt kycReviewedAt kycRejectionNote');
   res.json({
@@ -4776,7 +4534,6 @@ router.get('/kyc/status', auth, asyncH(async (req, res) => {
   });
 }));
 
-// GET /admin/kyc — admin lists all pending KYC submissions
 router.get('/admin/kyc', auth, adminOnly, asyncH(async (req, res) => {
   const { status = 'pending', page = 1, limit = 20 } = req.query;
   const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -4794,74 +4551,71 @@ router.get('/admin/kyc', auth, adminOnly, asyncH(async (req, res) => {
   res.json({ docs, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
 }));
 
-// POST /admin/kyc/:userId/approve — admin approves KYC (manual only, no automation)
 router.post('/admin/kyc/:userId/approve', auth, adminOnly, asyncH(async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      const kycDoc = await KycDoc.findOne({ user: req.params.userId }).session(session);
-      if (!kycDoc) { const e = new Error('KYC submission not found.'); e.status = 404; throw e; }
-      kycDoc.status     = 'approved';
-      kycDoc.reviewedBy = req.user._id;
-      kycDoc.reviewedAt = new Date();
-      kycDoc.adminNote  = req.body.note || '';
-      await kycDoc.save({ session });
-      await User.findByIdAndUpdate(req.params.userId, {
-        kycStatus:'approved', kycReviewedAt:new Date(),
-        kycReviewedBy:req.user._id, kycRejectionNote:'',
-      }, { session });
-    });
-    await logAdmin(req.user._id, 'kyc_approve', 'User', req.params.userId, req.body.note || 'KYC approved');
-    sendNotification({
-      recipient:req.params.userId, type:'system',
-      title:'✅ KYC Approved',
-      message:'Your KYC verification has been approved. You can now make withdrawals.',
-      link:'/wallet',
-    }).catch(()=>{});
-    res.json({ ok:true, message:'KYC approved.' });
-  } catch(err) {
-    if (err.status === 404) return res.status(404).json({ error: err.message });
-    throw err;
-  } finally { session.endSession(); }
+  const kycDoc = await KycDoc.findOne({ user: req.params.userId });
+  if (!kycDoc) return res.status(404).json({ error:'KYC submission not found.' });
+
+  kycDoc.status     = 'approved';
+  kycDoc.reviewedBy = req.user._id;
+  kycDoc.reviewedAt = new Date();
+  kycDoc.adminNote  = req.body.note || '';
+  await kycDoc.save();
+
+  await User.findByIdAndUpdate(req.params.userId, {
+    kycStatus:      'approved',
+    kycReviewedAt:  new Date(),
+    kycReviewedBy:  req.user._id,
+    kycRejectionNote: '',
+  });
+
+  await logAdmin(req.user._id, 'kyc_approve', 'User', req.params.userId, req.body.note || 'KYC approved');
+
+  sendNotification({
+    recipient: req.params.userId, type:'system',
+    title: '✅ KYC Approved',
+    message: 'Your KYC verification has been approved. You can now make withdrawals.',
+    link: '/wallet',
+  }).catch(() => {});
+
+  res.json({ ok:true, message:'KYC approved.' });
 }));
 
-// POST /admin/kyc/:userId/reject — admin rejects KYC with reason (manual only)
 router.post('/admin/kyc/:userId/reject', auth, adminOnly, asyncH(async (req, res) => {
   const reason = (req.body.reason || '').trim();
   if (!reason) return res.status(400).json({ error:'Rejection reason is required.' });
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      const kycDoc = await KycDoc.findOne({ user: req.params.userId }).session(session);
-      if (!kycDoc) { const e = new Error('KYC submission not found.'); e.status = 404; throw e; }
-      kycDoc.status     = 'rejected';
-      kycDoc.reviewedBy = req.user._id;
-      kycDoc.reviewedAt = new Date();
-      kycDoc.adminNote  = reason;
-      await kycDoc.save({ session });
-      await User.findByIdAndUpdate(req.params.userId, {
-        kycStatus:'rejected', kycReviewedAt:new Date(),
-        kycReviewedBy:req.user._id, kycRejectionNote:reason,
-      }, { session });
-    });
-    await logAdmin(req.user._id, 'kyc_reject', 'User', req.params.userId, reason);
-    sendNotification({
-      recipient:req.params.userId, type:'system',
-      title:'❌ KYC Rejected',
-      message:`Your KYC was rejected: ${reason}. Please resubmit with correct documents.`,
-      link:'/settings',
-    }).catch(()=>{});
-    res.json({ ok:true, message:'KYC rejected.' });
-  } catch(err) {
-    if (err.status === 404) return res.status(404).json({ error: err.message });
-    throw err;
-  } finally { session.endSession(); }
+
+  const kycDoc = await KycDoc.findOne({ user: req.params.userId });
+  if (!kycDoc) return res.status(404).json({ error:'KYC submission not found.' });
+
+  kycDoc.status     = 'rejected';
+  kycDoc.reviewedBy = req.user._id;
+  kycDoc.reviewedAt = new Date();
+  kycDoc.adminNote  = reason;
+  await kycDoc.save();
+
+  await User.findByIdAndUpdate(req.params.userId, {
+    kycStatus:        'rejected',
+    kycReviewedAt:    new Date(),
+    kycReviewedBy:    req.user._id,
+    kycRejectionNote: reason,
+  });
+
+  await logAdmin(req.user._id, 'kyc_reject', 'User', req.params.userId, reason);
+
+  sendNotification({
+    recipient: req.params.userId, type:'system',
+    title: '❌ KYC Rejected',
+    message: `Your KYC was rejected: ${reason}. Please resubmit with correct documents.`,
+    link: '/settings',
+  }).catch(() => {});
+
+  res.json({ ok:true, message:'KYC rejected.' });
 }));
 
 mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS:5000 })
   .then(async () => {
     console.log('[DB] MongoDB connected');
-    // Load persisted exchange rate
+
     try {
       const rateConfig=await Config.findOne({ key:'ngnUsdRate' });
       if (rateConfig?.value) { currencyConfig.rate=Number(rateConfig.value); console.log(`[Config] Rate loaded: ${currencyConfig.rate} NGN/USD`); }
