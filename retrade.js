@@ -25,6 +25,8 @@ const speakeasy    = require('speakeasy');
 const QRCode       = require('qrcode');
 const passport     = require('passport');
 const { Strategy: GoogleStrategy } = require('passport-google-oauth20');
+const cloudinary   = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
 ['JWT_SECRET','JWT_REFRESH_SECRET','TOTP_ENCRYPTION_KEY'].forEach(k => {
   if (!process.env[k] || process.env[k].length < 32)
@@ -444,12 +446,7 @@ app.use(cors(corsOpts));
 app.use(express.json({ limit:'4mb' }));
 app.use(cookieParser());
 app.use(morgan(IS_PROD?'combined':'dev'));
-app.use('/uploads', (req, res, next) => {
-
-  res.setHeader('Content-Disposition', 'attachment');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  next();
-}, express.static(UPLOADS_DIR, { dotfiles: 'deny', index: false }));
+// Images are now served directly from Cloudinary CDN — no local /uploads route needed
 app.use(passport.initialize());
 
 const authLimiter   = rateLimit({ windowMs:15*60*1000, max:20,  standardHeaders:true, legacyHeaders:false, message:{ error:t('rate_limited') } });
@@ -460,18 +457,29 @@ app.use('/api/auth',   authLimiter);
 app.use('/api/search', searchLimiter);
 app.use('/api',        apiLimiter);
 
-const storage = multer.diskStorage({
-  destination:(_,__,cb) => cb(null,UPLOADS_DIR),
-  filename:   (_,file,cb) => cb(null,`${uuid()}${path.extname(file.originalname).toLowerCase()}`),
+// ── Cloudinary configuration ──────────────────────────────
+cloudinary.config({
+  cloud_name:  process.env.CLOUDINARY_CLOUD_NAME,
+  api_key:     process.env.CLOUDINARY_API_KEY,
+  api_secret:  process.env.CLOUDINARY_API_SECRET,
 });
-const upload = multer({ storage, limits:{ fileSize:8*1024*1024, files:8 }, fileFilter:(_,file,cb) => /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)?cb(null,true):cb(new Error('Images only')) });
-const uploadEvidence = multer({ storage, limits:{ fileSize:10*1024*1024, files:5 }, fileFilter:(_,file,cb) => /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)?cb(null,true):cb(new Error('Images only')) });
-const uploadProof = multer({ storage, limits:{ fileSize:10*1024*1024, files:3 }, fileFilter:(_,file,cb) => /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)?cb(null,true):cb(new Error('Images only')) });
 
-const uploadSupport = multer({ storage, limits:{ fileSize:5*1024*1024, files:1 }, fileFilter:(_,file,cb) => {
-  const ok = /^image\/(jpeg|png|webp|gif)$/.test(file.mimetype) || file.mimetype === 'application/pdf';
-  cb(ok ? null : new Error('Images or PDF only'), ok);
-} });
+function makeCloudinaryStorage(folder, allowedFormats) {
+  return new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder:          `rawflip/${folder}`,
+      allowed_formats: allowedFormats || ['jpg','jpeg','png','webp','gif'],
+      transformation:  [{ quality:'auto', fetch_format:'auto' }],
+    },
+  });
+}
+
+const upload         = multer({ storage: makeCloudinaryStorage('listings'),  limits:{ fileSize:8*1024*1024,  files:8 } });
+const uploadEvidence = multer({ storage: makeCloudinaryStorage('evidence'),  limits:{ fileSize:10*1024*1024, files:5 } });
+const uploadProof    = multer({ storage: makeCloudinaryStorage('proofs'),    limits:{ fileSize:10*1024*1024, files:3 } });
+const uploadSupport  = multer({ storage: makeCloudinaryStorage('support'),   limits:{ fileSize:5*1024*1024,  files:1 } });
+const uploadKYC      = multer({ storage: makeCloudinaryStorage('kyc', ['jpg','jpeg','png','webp']), limits:{ fileSize:10*1024*1024, files:2 } });
 
 const userSchema = new mongoose.Schema({
   username:         { type:String, required:true, unique:true, trim:true, minlength:3, maxlength:30 },
@@ -2074,7 +2082,7 @@ router.post('/wallet/deposit/request', auth, requireAgreements, uploadProof.sing
   const user = await User.findById(req.user._id);
   const fee     = calculateDepositFee(amount, user);
   const netAmount = amount - fee;
-  const proofImageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  const proofImageUrl = req.file ? req.file.path : null;
 
   const walletTx = await WalletTx.create({
     user: req.user._id,
@@ -2126,7 +2134,7 @@ router.post('/wallet/deposit/:txId/proof', auth, uploadProof.single('proof'), [p
   if (wtx.status !== WALLET_TX_STATES.PENDING) return res.status(400).json({ error:`Cannot submit proof for status: ${wtx.status}` });
   if (!req.file) return res.status(400).json({ error:'Proof image required' });
 
-  wtx.proofImageUrl = `/uploads/${req.file.filename}`;
+  wtx.proofImageUrl = req.file.path;
   wtx.status = WALLET_TX_STATES.PROOF_SUBMITTED;
   await wtx.save();
 
@@ -2547,7 +2555,7 @@ router.post('/listings', auth, upload.array('images',8), enforcePlanListingLimit
     shipping: req.body.shipping==='true'||req.body.shipping===true,
     shippingCost: parseFloat(req.body.shippingCost)||0,
     contactPhone: (req.body.contactPhone||'').slice(0,30),
-    images: (req.files||[]).map(f=>`/uploads/${f.filename}`),
+    images: (req.files||[]).map(f=>f.path),
     searchPriority,
   });
   esIndex(l).catch(()=>{});
@@ -2564,7 +2572,7 @@ router.put('/listings/:id', auth, upload.array('images',8), [param('id').isMongo
   const allowed = ['title','description','price','category','condition','location','tags','negotiable','shipping','shippingCost','contactPhone'];
   allowed.forEach(f=>{ if(req.body[f]!==undefined) l[f]=req.body[f]; });
   if (req.body.tags) l.tags=req.body.tags.split(',').map(t=>t.trim()).filter(Boolean).slice(0,10);
-  if (req.files?.length) l.images=(req.files||[]).map(f=>`/uploads/${f.filename}`);
+  if (req.files?.length) l.images=(req.files||[]).map(f=>f.path);
   l.searchPriority = searchPriority;
   await l.save();
   esIndex(l).catch(()=>{});
@@ -2969,7 +2977,7 @@ router.post('/transactions/:id/dispatch', auth, upload.single('productPicture'),
     tx.sendTime         = new Date(req.body.sendTime);
     tx.estimatedArrival = new Date(req.body.estimatedArrival);
     tx.driverPhone      = req.body.driverPhone;
-    if (req.file) tx.productPictureUrl = `/uploads/${req.file.filename}`;
+    if (req.file) tx.productPictureUrl = req.file.path;
   }
 
   tx.dispatchType  = dtype;
@@ -3086,7 +3094,7 @@ router.post('/disputes', auth, uploadEvidence.array('evidence',5), [
   if (![TX_STATES.ESCROW_FUNDED,TX_STATES.SHIPPED,TX_STATES.DELIVERED].includes(tx.state)) return res.status(400).json({ error:`Cannot dispute in state ${tx.state}` });
   if (tx.disputeId) return res.status(409).json({ error:'Dispute already exists' });
 
-  const evidenceImages=(req.files||[]).map(f=>`/uploads/${f.filename}`);
+  const evidenceImages=(req.files||[]).map(f=>f.path);
   const session=await mongoose.startSession();
   let dispute;
   try {
@@ -3182,7 +3190,7 @@ router.put('/users/me', auth, upload.single('avatar'), asyncH(async (req,res) =>
   const allowed=['bio','location','phone','whatsapp'];
   const updates={};
   allowed.forEach(f=>{ if(req.body[f]!==undefined)updates[f]=req.body[f]; });
-  if (req.file) updates.avatar=`/uploads/${req.file.filename}`;
+  if (req.file) updates.avatar=req.file.path;
   const user=await User.findByIdAndUpdate(req.user._id,updates,{ new:true }).select('-password -refreshTokens');
   res.json(user);
 }));
@@ -4317,7 +4325,7 @@ router.post('/support/tickets', ticketLimiter, uploadSupport.single('attachment'
       email:      userEmail,
       subject:    req.body.subject,
       message:    req.body.message,
-      attachment: req.file ? `/uploads/${req.file.filename}` : null,
+      attachment: req.file ? req.file.path : null,
       priority:   ticketPriority,
     });
 
@@ -4487,8 +4495,6 @@ router.delete('/push-subscription', auth, asyncH(async (req, res) => {
   res.json({ ok: true });
 }));
 
-const uploadKYC = multer({ storage, limits:{ fileSize:10*1024*1024, files:2 }, fileFilter:(_,file,cb) => /^image\/(jpeg|png|webp)$/.test(file.mimetype)?cb(null,true):cb(new Error('Images only (JPEG, PNG, WEBP)')) });
-
 router.post('/kyc/submit', auth, uploadKYC.fields([{name:'idDoc',maxCount:1},{name:'selfie',maxCount:1}]), asyncH(async (req, res) => {
   const user = await User.findById(req.user._id);
   if (user.kycStatus === 'approved')
@@ -4507,8 +4513,8 @@ router.post('/kyc/submit', auth, uploadKYC.fields([{name:'idDoc',maxCount:1},{na
   if (!selfieFile)
     return res.status(400).json({ error:'Please upload a selfie holding your ID.' });
 
-  const idDocUrl  = `/uploads/${idDocFile.filename}`;
-  const selfieUrl = `/uploads/${selfieFile.filename}`;
+  const idDocUrl  = idDocFile.path;
+  const selfieUrl = selfieFile.path;
 
   await KycDoc.findOneAndUpdate(
     { user: user._id },
