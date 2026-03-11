@@ -4152,6 +4152,19 @@ router.get('/admin/founding-members', auth, adminOnly, asyncH(async (req,res) =>
 app.use('/api', csrfMiddleware, router);
 app.get('/health', (_,res) => res.json({ status:'ok', ts:Date.now(), rate:currencyConfig.rate }));
 
+// PWA Web Share Target — receives shared content from the OS share sheet
+// Manifest share_target.action = "/share", method = GET
+// Adds share_target=1 so the frontend can distinguish it from a normal page load
+app.get('/share', (req, res) => {
+  const { title = '', text = '', url = '' } = req.query;
+  const params = new URLSearchParams({ share_target: '1' });
+  if (title) params.set('title', title);
+  if (text)  params.set('text', text);
+  if (url)   params.set('url', url);
+  // Redirect to SPA root — frontend checkStartupActions() will pick up the params
+  res.redirect(302, '/?' + params.toString());
+});
+
 app.use((err,req,res,next) => {
 
   const origin = req.headers.origin;
